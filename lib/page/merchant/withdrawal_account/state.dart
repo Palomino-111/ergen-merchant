@@ -1,0 +1,3 @@
+class WithdrawalAccountState {
+  WithdrawalAccountState() {}
+}

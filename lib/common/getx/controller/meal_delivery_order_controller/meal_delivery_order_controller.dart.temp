@@ -1,0 +1,147 @@
+import 'package:get/get.dart';
+import 'package:zheergen_merchant_end/common/getx/controller/merchant_controller.dart';
+import '../../../../main.dart';
+import '../../../exception/showable_exception.dart';
+import '../../../models/meal_delivery_order.dart';
+
+/**
+ * 按天拉取的，先暂时不用，后续如果要用再说
+ */
+class MealDeliveryOrderController extends GetxController {
+  static MealDeliveryOrderController get to => Get.find();
+
+  /* --------------- 对外状态 --------------- */
+  final RxList<MealDeliveryOrder> mealDeliveryOrders =
+      <MealDeliveryOrder>[].obs;
+
+  // 向下加载
+  final RxBool loadingNewer = false.obs;
+
+  // 向上加载
+  final RxBool loadingOlder = false.obs;
+
+  // 最早
+  final RxBool reachEarliest = false.obs;
+
+  // 最新
+  final RxBool reachLatest = false.obs;
+
+  /* --------------- 内部游标 --------------- */
+  // 当前列表里最旧一条的 createdAt
+  DateTime? _cursorEarliest;
+
+  // 当前列表里最新一条的 createdAt
+  DateTime? _cursorLatest;
+
+  /**
+   * 用于判断是否初始化
+   */
+  bool isInitialized() {
+    return _cursorEarliest != null || _cursorLatest != null;
+  }
+
+  /* --------------- 每页条数 --------------- */
+  final int _pageSize = 20;
+
+  /* --------------- 首次加载 --------------- */
+  Future<void> loadInitial({DateTime? startDay}) async {
+    mealDeliveryOrders.clear();
+    reachEarliest.value = false;
+    reachLatest.value = false;
+
+    // 默认基准：今天 00:00
+    final baseDay = (startDay ?? DateTime.now()).copyWith(
+      hour: 0,
+      minute: 0,
+      second: 0,
+      millisecond: 0,
+      microsecond: 0,
+    );
+
+    _cursorLatest = baseDay; // 从 00:00 开始往后
+    _cursorEarliest = baseDay; // 先设为同一天，便于后续探针
+
+    await _fetchRange(_cursorLatest, null, newer: true);
+  }
+
+  /* --------------- 向下加载（更晚） --------------- */
+  Future<void> loadNewer() async {
+    if (reachLatest.value || loadingNewer.value) return;
+    loadingNewer(true);
+    await _fetchRange(_cursorLatest, null, newer: true);
+    loadingNewer(false);
+  }
+
+  /* --------------- 向上加载（更早） --------------- */
+  Future<void> loadOlder() async {
+    if (reachEarliest.value || loadingOlder.value) return;
+    loadingOlder(true);
+    await _fetchRange(null, _cursorEarliest, newer: false);
+    loadingOlder(false);
+  }
+
+  /* --------------- 核心查询 --------------- */
+
+  /// newer = true  -> 比 cursorLatest 更大（更晚）
+  /// newer = false -> 比 cursorEarliest 更小（更早）
+  Future<void> _fetchRange(
+    DateTime? after,
+    DateTime? before, {
+    bool newer = true,
+  }) async {
+    final merchantId = MerchantController.to.merchant.value?.id;
+    if (merchantId == null) throw ShowableException('商家未登录！');
+
+    final query = supabase
+        .from('meal_delivery_order')
+        .select()
+        .eq('merchant_id', merchantId);
+
+    if (newer && after != null) {
+      query.gt('delivery_time', after.toUtc().toIso8601String());
+    }
+    if (!newer && before != null) {
+      query.lt('delivery_time', before.toUtc().toIso8601String());
+    }
+
+    final response = await query
+        .order('delivery_time', ascending: newer) // “更晚”时升序，方便 limit
+        .limit(_pageSize);
+    final orders = response.map((e) => MealDeliveryOrder.fromJson(e)).toList();
+
+    /* 如果 flipped 排序方便，再翻转回来 */
+    final actualList = newer ? orders : orders.reversed.toList();
+
+    /* 空结果 => 边界 */
+    if (actualList.isEmpty) {
+      newer ? reachLatest.value = true : reachEarliest.value = true;
+      return;
+    }
+
+    /* 更新主列表 */
+    newer
+        ? mealDeliveryOrders.insertAll(0, actualList) // 头部插入
+        : mealDeliveryOrders.addAll(actualList); // 尾部追加
+
+    /* 更新游标 */
+    _cursorEarliest = mealDeliveryOrders.last.createdAt;
+    _cursorLatest = mealDeliveryOrders.first.createdAt;
+  }
+
+  /**
+   * 更新配送订单
+   */
+  Future<void> updateMealDeliveryOrder(
+    MealDeliveryOrder newMealDeliveryOrder,
+  ) async {
+    try {
+      await supabase
+          .from('meal_delivery_order')
+          .update(newMealDeliveryOrder.toJson())
+          .eq('id', newMealDeliveryOrder.id ?? "");
+    } catch (e, st) {
+      print("updateMealDeliveryOrder, fail, $e, $st");
+      throw ShowableException('😂 更新失败，未知错误！');
+    }
+  }
+}

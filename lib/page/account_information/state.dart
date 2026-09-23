@@ -1,0 +1,3 @@
+class AccountInformationState {
+  AccountInformationState() {}
+}

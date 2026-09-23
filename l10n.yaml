@@ -1,0 +1,5 @@
+# 国际化相关文件的配置，更多相关的配置可以参考：
+# 中文：https://docs.flutter.cn/ui/accessibility-and-internationalization/internationalization#using-the-dart-intl-tools
+# 英文：https://docs.flutter.dev/ui/accessibility-and-internationalization/internationalization
+arb-dir: lib/common/l10n
+template-arb-file: l10n_zh.arb
