@@ -43,7 +43,11 @@ class LoginWithPasswordLogic extends GetxController {
     );
     closeAllLoading();
     if (!isSuccess) {
-      showTextToast(context, '登录失败');
+      // 把真实原因（超时/服务端报错）告诉用户，别只弹一句「登录失败」
+      showTextToast(
+        context,
+        AccountController.to.lastErrorMessage ?? '登录失败',
+      );
       return;
     }
     showTextToast(context, '登录成功');

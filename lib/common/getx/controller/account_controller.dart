@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:get/get.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:zheergen_merchant_end/common/getx/controller/merchant_controller.dart';
@@ -5,6 +7,7 @@ import '../../../main.dart';
 import '../../models/gender.dart';
 import '../../models/physical_activity_level.dart';
 import '../../models/user_metadata.dart';
+import '../../utility/network.dart';
 
 class AccountController extends GetxController {
   static AccountController get to => Get.find();
@@ -12,6 +15,12 @@ class AccountController extends GetxController {
   Rxn<Session> session = Rxn();
   Rxn<User> user = Rxn();
   Rxn<UserMetadata> userMetadata = Rxn();
+
+  /// 最近一次失败原因（超时 / 服务端报错），供界面展示更准确的提示
+  ///
+  /// 这些方法只返回 bool，界面拿到 false 只能笼统提示「失败」；
+  /// 网络被墙时（国内直连 supabase 很常见）用户根本分不清是网络问题还是账号问题。
+  String? lastErrorMessage;
 
   void listenToAuthChanges() {
     // 监听Supabase Auth相关的事件
@@ -136,19 +145,27 @@ class AccountController extends GetxController {
       // 后续看看是否给官方提交各issue改进一下，或者我们自己部署改源码。
       ///
       // 配置内测手机号列表后，auth hook对应的边缘函数都不会被调用，对应的验证码就是生效的。。。所以都不用发送验证码了
-      await Supabase.instance.client.auth.signInWithOtp(
-        phone: phoneNumber,
+      await withNetworkTimeout(
+        Supabase.instance.client.auth.signInWithOtp(
+          phone: phoneNumber,
 
-        // data字段只在某个手机号第一次调用signInWithOtp或者其他auth相关接口时候会添加对应字段，
-        // 后续的调用都不允许增删改了，因此没啥作用
-        data: {},
+          // data字段只在某个手机号第一次调用signInWithOtp或者其他auth相关接口时候会添加对应字段，
+          // 后续的调用都不允许增删改了，因此没啥作用
+          data: {},
+        ),
       );
       print("发送成功");
+      lastErrorMessage = null;
       return true;
+    } on TimeoutException catch (e) {
+      print('发送失败(超时): $e');
+      lastErrorMessage = networkErrorMessage(e);
     } on AuthException catch (e) {
       print('发送失败: ${e.message}');
+      lastErrorMessage = e.message;
     } catch (e) {
       print("发送失败：$e");
+      lastErrorMessage = '发送失败：$e';
     }
     return false;
   }
@@ -159,18 +176,25 @@ class AccountController extends GetxController {
   ) async {
     try {
       // ignore: unused_local_variable
-      final AuthResponse response =
-          await Supabase.instance.client.auth.verifyOTP(
-        phone: phoneNumber,
-        token: smsVerificationCode,
-        type: OtpType.sms,
+      final AuthResponse response = await withNetworkTimeout(
+        Supabase.instance.client.auth.verifyOTP(
+          phone: phoneNumber,
+          token: smsVerificationCode,
+          type: OtpType.sms,
+        ),
       );
       print("验证成功");
+      lastErrorMessage = null;
       return true;
+    } on TimeoutException catch (e) {
+      print('验证失败(超时): $e');
+      lastErrorMessage = networkErrorMessage(e);
     } on AuthException catch (e) {
       print('验证失败: ${e.message}');
+      lastErrorMessage = e.message;
     } catch (e) {
       print('验证失败， 未知错误: $e');
+      lastErrorMessage = '验证失败：$e';
     }
     return false;
   }
@@ -181,16 +205,25 @@ class AccountController extends GetxController {
   ) async {
     try {
       // ignore: unused_local_variable
-      final AuthResponse response =
-          await Supabase.instance.client.auth.signInWithPassword(
-        phone: phoneNumber,
-        password: password,
+      final AuthResponse response = await withNetworkTimeout(
+        Supabase.instance.client.auth.signInWithPassword(
+          phone: phoneNumber,
+          password: password,
+        ),
       );
       // 登录成功
       print("登录成功");
+      lastErrorMessage = null;
       return true;
+    } on TimeoutException catch (e) {
+      print("登录失败(超时)：$e");
+      lastErrorMessage = networkErrorMessage(e);
+    } on AuthException catch (e) {
+      print("登录失败：${e.message}");
+      lastErrorMessage = e.message;
     } catch (e) {
       print("登录失败：$e");
+      lastErrorMessage = '登录失败：$e';
     }
     return false;
   }
@@ -206,13 +239,20 @@ class AccountController extends GetxController {
   ) async {
     try {
       // ignore: unused_local_variable
-      UserResponse userResponse = await supabase.auth.updateUser(UserAttributes(
-        phone: newPhoneNumber,
-      ));
+      UserResponse userResponse = await withNetworkTimeout(
+        supabase.auth.updateUser(UserAttributes(
+          phone: newPhoneNumber,
+        )),
+      );
       print('获取验证码成功');
+      lastErrorMessage = null;
       return true;
+    } on TimeoutException catch (e) {
+      print('获取验证码失败(超时): $e');
+      lastErrorMessage = networkErrorMessage(e);
     } catch (e) {
       print('获取验证码失败: $e');
+      lastErrorMessage = '获取验证码失败：$e';
     }
     return false;
   }
@@ -223,16 +263,22 @@ class AccountController extends GetxController {
   ) async {
     try {
       // ignore: unused_local_variable
-      final AuthResponse response =
-          await Supabase.instance.client.auth.verifyOTP(
-        phone: newPhoneNumber,
-        token: smsVerificationCode,
-        type: OtpType.phoneChange,
+      final AuthResponse response = await withNetworkTimeout(
+        Supabase.instance.client.auth.verifyOTP(
+          phone: newPhoneNumber,
+          token: smsVerificationCode,
+          type: OtpType.phoneChange,
+        ),
       );
       print("修改成功");
+      lastErrorMessage = null;
       return true;
+    } on TimeoutException catch (e) {
+      print("修改失败(超时)，$e");
+      lastErrorMessage = networkErrorMessage(e);
     } catch (e) {
       print("修改失败，$e");
+      lastErrorMessage = '修改失败：$e';
     }
     return false;
   }
@@ -242,15 +288,23 @@ class AccountController extends GetxController {
   ) async {
     try {
       // ignore: unused_local_variable
-      UserResponse userResponse = await supabase.auth.updateUser(
-        UserAttributes(
-          password: newPassword,
+      UserResponse userResponse = await withNetworkTimeout(
+        supabase.auth.updateUser(
+          UserAttributes(
+            password: newPassword,
+          ),
         ),
       );
       print('修改成功');
+      lastErrorMessage = null;
       return true;
+    } on TimeoutException catch (e) {
+      print('修改失败(超时): $e');
+      lastErrorMessage = networkErrorMessage(e);
+      return false;
     } catch (e) {
       print('修改失败: $e');
+      lastErrorMessage = '修改失败：$e';
       return false;
     }
   }

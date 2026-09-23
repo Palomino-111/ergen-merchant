@@ -36,7 +36,11 @@ class LoginWithSMSVerificationCodeLogic extends GetxController {
         .loginWithSMSVerificationCode(state.phoneNumber);
     closeAllLoading();
     if (!isSuccess) {
-      showTextToast(context, '发送失败');
+      // 把真实原因（超时/服务端报错）告诉用户，别只弹一句「发送失败」
+      showTextToast(
+        context,
+        AccountController.to.lastErrorMessage ?? '发送失败',
+      );
       return;
     }
     // 发送验证码成功，启动定时器
@@ -97,7 +101,11 @@ class LoginWithSMSVerificationCodeLogic extends GetxController {
     );
     closeAllLoading();
     if (!isSuccess) {
-      showTextToast(context, '登录失败');
+      // 把真实原因（超时/服务端报错）告诉用户，别只弹一句「登录失败」
+      showTextToast(
+        context,
+        AccountController.to.lastErrorMessage ?? '登录失败',
+      );
       return;
     }
     Get.offAll(MainPage());

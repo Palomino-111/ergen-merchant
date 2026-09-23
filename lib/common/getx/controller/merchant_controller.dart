@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:get/get.dart';
 import 'package:hive/hive.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -7,6 +9,7 @@ import '../../exception/showable_exception.dart';
 import '../../hive_names.dart';
 import '../../models/funds.dart';
 import '../../models/merchant.dart';
+import '../../utility/network.dart';
 import 'account_controller.dart';
 
 class MerchantController extends GetxController {
@@ -53,16 +56,21 @@ class MerchantController extends GetxController {
       final userId = AccountController.to.user.value?.id;
       if (userId == null) throw ShowableException('用户未登录');
 
-      final response = await supabase
-          .from('merchant')
-          .select()
-          .eq('user_id', AccountController.to.user.value!.id)
-          .single();
+      final response = await withNetworkTimeout(
+        supabase
+            .from('merchant')
+            .select()
+            .eq('user_id', AccountController.to.user.value!.id)
+            .single(),
+      );
       final merchant = Merchant.fromJson(response);
       this.merchant.value = merchant;
       // 更好的方式是写Hive Adapter（可以用Hive提供的工具自动生成），这里为了方便，先直接存JSON
       // 缓存merchant
       Hive.box(HiveNames.settings).put('merchant', merchant.toJson());
+    } on TimeoutException catch (e) {
+      print("fetchMerchant, timeout, $e");
+      throw ShowableException(networkErrorMessage(e));
     } catch (e, st) {
       print("fetchMerchant, fail, $e, $st");
       throw ShowableException('获取店铺信息失败，未知错误！');

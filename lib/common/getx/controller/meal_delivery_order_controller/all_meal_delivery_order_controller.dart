@@ -1,8 +1,9 @@
 import 'package:get/get.dart';
 import 'package:zheergen_merchant_end/common/getx/controller/merchant_controller.dart';
-import '../../../../main.dart';
+import '../../../data/repository/meal_delivery_order_repository.dart';
 import '../../../exception/showable_exception.dart';
 import '../../../models/meal_delivery_order.dart';
+import '../../../env.dart';
 
 /**
  * 全部餐配送订单
@@ -10,6 +11,8 @@ import '../../../models/meal_delivery_order.dart';
 class AllMealDeliveryOrderController extends GetxController {
   static AllMealDeliveryOrderController get to => Get.find();
   final RxList<MealDeliveryOrder> allMealDeliveryOrders = RxList();
+
+  final MealDeliveryOrderRepository _repository = Get.find();
 
   // 每页数据量
   int pageSize = 20;
@@ -29,19 +32,21 @@ class AllMealDeliveryOrderController extends GetxController {
     bool isRefresh = false,
   }) async {
     try {
-      final merchantId = MerchantController.to.merchant.value?.id;
+      // 正常取登录用户对应的店铺；未登录时可用 DEBUG_MERCHANT_ID 兜底（仅调试）
+      final merchantId =
+          MerchantController.to.merchant.value?.id ?? Env.debugMerchantId;
       if (merchantId == null) throw ShowableException('商家未登录！');
 
       int newPage = isRefresh ? 0 : currentPage + 1;
-      int offset = newPage * pageSize;
 
-      final response = await supabase
-          .from('meal_delivery_order')
-          .select()
-          .eq('merchant_id', merchantId)
-          .order('delivery_time', ascending: false)
-          .range(offset, offset + pageSize - 1);
-      final result = response.map((e) => MealDeliveryOrder.fromJson(e));
+      // 门店归属过滤写在数据层（merchant_id），并一次把 meal / meal_dish / dish_sku
+      // 嵌套查回来，item 不用再逐个查餐品
+      final List<MealDeliveryOrder> result =
+          await _repository.fetchByMerchant(
+        merchantId: merchantId,
+        page: newPage,
+        pageSize: pageSize,
+      );
 
       this.hasMore = result.length >= pageSize;
 
@@ -52,6 +57,8 @@ class AllMealDeliveryOrderController extends GetxController {
       }
 
       this.currentPage = newPage;
+    } on ShowableException {
+      rethrow;
     } catch (e) {
       print("fetchAllMealDeliveryOrders, fail, $e");
       throw ShowableException('获取订单失败，未知错误！');

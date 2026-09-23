@@ -61,8 +61,13 @@ class DishSku {
       salesVolume: json['sales_volume'],
       isAvailable: json['is_available'],
       sortOrder: json['sort_order'],
-      createdAt: DateTime.parse(json['created_at'] as String),
-      updatedAt: DateTime.parse(json['updated_at'] as String),
+      // 时间字段在部分历史数据里是 NULL，避免一条脏数据炸掉整单解析
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'] as String)
+          : null,
+      updatedAt: json['updated_at'] != null
+          ? DateTime.parse(json['updated_at'] as String)
+          : null,
     );
   }
 

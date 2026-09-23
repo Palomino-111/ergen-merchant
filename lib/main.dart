@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:fluwx/fluwx.dart';
@@ -11,6 +13,7 @@ import 'package:zheergen_merchant_end/page/sign_agreement/view.dart';
 import 'package:bot_toast/bot_toast.dart';
 import 'common/dependency_injection/binding.dart';
 import 'common/easy_refresh/utility.dart';
+import 'common/env.dart';
 import 'common/getx/controller/account_controller.dart';
 import 'common/getx/controller/meal_delivery_order_controller/all_meal_delivery_order_controller.dart';
 import 'common/getx/controller/merchant_controller.dart';
@@ -19,13 +22,38 @@ import 'common/theme/app_theme.dart';
 import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'common/utility/common.dart';
 
+/// 调试用 HTTP 代理：dart:io 默认直连、不走系统代理，
+/// 国内直连 supabase.co 时请求会一直挂着（表现就是「一直在加载」）。
+/// 通过 `--dart-define=HTTP_PROXY=host:port` 打开。
+class _DebugHttpOverrides extends HttpOverrides {
+  _DebugHttpOverrides(this.proxy);
+
+  final String proxy;
+
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    final client = super.createHttpClient(context);
+    client.findProxy = (uri) => 'PROXY $proxy';
+    return client;
+  }
+}
+
 Future<void> main() async {
+  if (Env.httpProxy.isNotEmpty) {
+    print('使用调试代理: ${Env.httpProxy}');
+    HttpOverrides.global = _DebugHttpOverrides(Env.httpProxy);
+  }
   await initializeBeforeRunApp();
   runApp(const MyApp());
 }
 
 Future<void> initializeBeforeRunApp() async {
   await initHive();
+  // TODO 临时（调试期）：协议签署页的「同意/不同意」按钮因为
+  //  colorScheme.secondary 是透明色而看不见，先无条件视为已签署，直接进主页。
+  //  协议页修好后删掉这一行即可恢复原来的「先签协议」流程。
+  await Hive.box(HiveNames.settings)
+      .put('userHasSignedTheRelevantAgreement', true);
   initGetX();
   await initSupabase();
   await initFluwx();
@@ -59,11 +87,10 @@ void initGetX() {
 final supabase = Supabase.instance.client;
 
 Future<void> initSupabase() async {
-  // 初始化Supabase
+  // 初始化Supabase（地址与 key 可以用 --dart-define 覆盖，见 common/env.dart）
   await Supabase.initialize(
-    url: 'https://redkowdpjduavcmzjfep.supabase.co',
-    anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJlZGtvd2RwamR1YXZjbXpqZmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE2NzMwMzEsImV4cCI6MjA1NzI0OTAzMX0.2qqZo6Drq9BpqttPr5hwT1yiiVNlfC2ovFZaxsKzB1g',
+    url: Env.supabaseUrl,
+    anonKey: Env.supabaseAnonKey,
   );
   // 执行那些依赖supabase初始化的操作
   AccountController.to.listenToAuthChanges();
@@ -84,10 +111,8 @@ class MyApp extends StatelessWidget {
     // 用户需要先签署相关协议才能使用APP（《用户协议》与《隐私政策》）
     bool userHasSignedTheRelevantAgreement = Hive.box(HiveNames.settings)
         .get('userHasSignedTheRelevantAgreement', defaultValue: false);
-    // TODO 临时：协议页按钮不可见（colorScheme.secondary 是透明色）先直接进主页，
-    //  等协议页修好后恢复成：
-    //  Widget home = userHasSignedTheRelevantAgreement ? MainPage() : SignAgreementPage();
-    Widget home = MainPage();
+    Widget home =
+        userHasSignedTheRelevantAgreement ? MainPage() : SignAgreementPage();
 
     return GetMaterialApp(
       title: AppTheme.appName,

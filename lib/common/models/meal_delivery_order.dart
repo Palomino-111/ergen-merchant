@@ -1,5 +1,6 @@
-// import 'package:flutter_travel_concept/models/meal.dart';
-// import 'dish_sku.dart';
+import 'dish_sku.dart';
+import 'meal.dart';
+
 // 餐食配送订单
 class MealDeliveryOrder {
   // 餐配送订单id
@@ -56,14 +57,16 @@ class MealDeliveryOrder {
   // 最后更新时间
   final DateTime? updatedAt;
 
-  // 直接关联菜品（按sort_order排序）
-  // List<DishSku> dishSkus = [];
+  // 直接关联菜品（按sort_order排序），由带嵌套查询的接口填充
+  List<DishSku> dishSkus = [];
 
   // 餐名
   String mealName = "";
 
-  // 配送单对应的Meal对象
-  // Meal? meal;
+  // 配送单对应的 Meal 对象，由带嵌套查询的接口填充。
+  // meal 关联取不到（FK 为空 / 餐已删除）时为 null，
+  // 这种单子用 mealName + mealSnapshot 兜底展示。
+  Meal? meal;
 
   MealDeliveryOrder({
     this.id,
@@ -106,8 +109,14 @@ class MealDeliveryOrder {
           ? DateTime.parse(json['delivered_at'])
           : null,
       status: json['status'],
-      createdAt: DateTime.parse(json['created_at']),
-      updatedAt: DateTime.parse(json['updated_at']),
+      // 注意：线上 meal_delivery_order 表里 created_at / updated_at 允许为 NULL
+      // （实测就是 null），不能直接 DateTime.parse，否则整条订单解析失败
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'])
+          : null,
+      updatedAt: json['updated_at'] != null
+          ? DateTime.parse(json['updated_at'])
+          : null,
     );
   }
 
@@ -169,6 +178,9 @@ class MealDeliveryOrder {
     String? status,
     DateTime? createdAt,
     DateTime? updatedAt,
+    List<DishSku>? dishSkus,
+    String? mealName,
+    Meal? meal,
   }) {
     return MealDeliveryOrder(
       id: id ?? this.id,
@@ -189,6 +201,10 @@ class MealDeliveryOrder {
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
-    );
+    )
+      // 这几个字段不是构造参数（由嵌套查询填充），只能建好对象后再赋值
+      ..dishSkus = dishSkus ?? this.dishSkus
+      ..mealName = mealName ?? this.mealName
+      ..meal = meal ?? this.meal;
   }
 }

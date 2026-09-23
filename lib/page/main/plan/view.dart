@@ -553,20 +553,27 @@ class PlanStatefulWidget extends State<PlanPage>
               buildStartDeliveryButton(context, mealDeliveryOrder, index),
             // 菜品列表
             SizedBox(height: Dimensions.margin16),
-            FutureBuilder<Meal?>(
-              future:
-                  logic.mealRepository.getOneById(mealDeliveryOrder.mealId!),
-              builder: (context, snap) {
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return const Text("加载中...");
-                }
-                final meal = snap.data;
-                if (snap.hasError || meal == null) {
-                  return const Text('菜品获取失败!');
-                }
-                return buildFoods(meal);
-              },
-            ),
+            // 列表接口已经把 meal / dish_sku 嵌套查回来了，直接用，避免每个 item
+            // 再单独查一次餐品（N+1）；只有 meal 关联缺失时才回退到单独查询
+            if (mealDeliveryOrder.meal != null)
+              buildFoods(mealDeliveryOrder.meal!)
+            else if (mealDeliveryOrder.mealId != null)
+              FutureBuilder<Meal?>(
+                future:
+                    logic.mealRepository.getOneById(mealDeliveryOrder.mealId!),
+                builder: (context, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Text("加载中...");
+                  }
+                  final meal = snap.data;
+                  if (snap.hasError || meal == null) {
+                    return const Text('菜品获取失败!');
+                  }
+                  return buildFoods(meal);
+                },
+              )
+            else
+              const Text('菜品获取失败!'),
             // 配送状态
             SizedBox(height: Dimensions.margin16),
             Container(
