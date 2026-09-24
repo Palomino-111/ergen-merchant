@@ -1,0 +1,15 @@
+# Supabase 项目配置。
+#
+# supabase/functions/ 是边缘函数源码的唯一真源。此前 11 个函数只存在于云端
+# （entrypoint 指向 /tmp/user_fn_...），没有任何版本控制；本目录用于改变这一点。
+
+project_id = "wmioylfpdbdwnbybkpju"
+
+[functions.dispatch-delivery-order]
+# 由商家端调用（备餐完成 → 呼叫骑手）。函数内转发用户 JWT，靠 RLS 鉴权，
+# 并显式校验 merchant.user_id === auth.uid()。
+verify_jwt = true
+
+# 后续新增 delivery-order-callback 时注意：
+#   快递100 的回调**不带** Supabase JWT，若 verify_jwt = true，请求会在函数入口
+#   被直接拒绝。该函数必须 verify_jwt = false，并改用 MD5(param + salt) 自校验。
