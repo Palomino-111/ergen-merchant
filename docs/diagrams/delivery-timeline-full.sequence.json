@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "同城配送生命周期完整时序",
+    "locale": "zh-CN",
+    "output": "docs/diagrams/delivery-timeline-full.html",
+    "viewBox": [1050, 790],
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "views": [
+      {
+        "id": "order",
+        "label": "① 下单",
+        "focus": ["consumer", "edge", "db"],
+        "note": "消费者下单，create-order 落库；这一步完全不接触快递100。"
+      },
+      {
+        "id": "dispatch",
+        "label": "② 发单",
+        "focus": ["merchant", "edge", "db", "kd100"],
+        "note": "商家备餐完成 → dispatch-delivery-order → 快递100 method=order（文档「二、同城急送下单接口」）。"
+      },
+      {
+        "id": "callback",
+        "label": "③ 回调",
+        "focus": ["kd100", "edge", "db"],
+        "note": "快递100 回调 callbackUrl（文档「五、同城急送订单状态回调接口」），验签后落库。"
+      }
+    ]
+  },
+  "participants": [
+    { "id": "consumer", "type": "frontend", "label": "消费者端 App" },
+    { "id": "merchant", "type": "frontend", "label": "商家端" },
+    { "id": "edge", "type": "backend", "label": "Edge Functions", "brand": "supabase" },
+    { "id": "db", "type": "database", "label": "Postgres" },
+    { "id": "kd100", "type": "external", "label": "快递100 同城急送" }
+  ],
+  "segments": [
+    { "from": 150, "to": 250, "label": "① 下单（不接触快递100）" },
+    { "from": 258, "to": 490, "label": "② 备餐完成 · 发单" },
+    { "from": 498, "to": 634, "label": "③ 状态回调（快递100 → 我们）" },
+    { "from": 646, "to": 724, "label": "④ 消费者查看" }
+  ],
+  "messages": [
+    { "id": "create-order", "from": "consumer", "to": "edge", "y": 178, "label": "create-order", "variant": "emphasis", "note": "已存在的 Edge Function" },
+    { "id": "insert-orders", "from": "edge", "to": "db", "y": 224, "label": "insert recipe_order + meal_delivery_order", "variant": "default", "note": "初始 status = awaiting_preparation" },
+
+    { "id": "dispatch-call", "from": "merchant", "to": "edge", "y": 280, "label": "dispatch-delivery-order", "variant": "emphasis", "note": "本次接入新建" },
+    { "id": "read-addresses", "from": "edge", "to": "db", "y": 326, "label": "读商家取货地址 + 配送单收货地址", "variant": "default" },
+    { "id": "kd-order", "from": "edge", "to": "kd100", "y": 372, "label": "method=order　文档「二、同城急送下单接口」", "variant": "emphasis", "note": "kuaidicom / callbackUrl / salt / goods" },
+    { "id": "kd-order-ack", "from": "kd100", "to": "edge", "y": 418, "label": "taskId + orderId + discountFee", "variant": "return" },
+    { "id": "persist-ids", "from": "edge", "to": "db", "y": 464, "label": "写 provider_task_id / provider_order_id", "variant": "default", "note": "状态 → awaiting_delivery" },
+
+    { "id": "kd-callback", "from": "kd100", "to": "edge", "y": 516, "label": "回调 callbackUrl　文档「五、订单状态回调接口」", "variant": "security", "note": "表单 taskId + param + sign；验签 MD5(param + salt)" },
+    { "id": "apply-status", "from": "edge", "to": "db", "y": 562, "label": "更新 status + courier_name + courier_mobile", "variant": "emphasis", "note": "delivery-order-callback（本次新建）" },
+    { "id": "callback-ack", "from": "edge", "to": "kd100", "y": 608, "label": "回 {result:true, returnCode:200}", "variant": "return", "note": "最多推 3 次、间隔 1 分钟" },
+
+    { "id": "consumer-read", "from": "consumer", "to": "edge", "y": 660, "label": "读 meal_delivery_order", "variant": "default" },
+    { "id": "consumer-view", "from": "edge", "to": "consumer", "y": 706, "label": "status + 骑手姓名 / 电话", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "consumer", "from": 173, "to": 229, "type": "frontend" },
+    { "participant": "consumer", "from": 655, "to": 712, "type": "frontend" },
+    { "participant": "merchant", "from": 275, "to": 470, "type": "frontend" },
+    { "participant": "edge", "from": 178, "to": 712, "type": "backend" },
+    { "participant": "db", "from": 219, "to": 229, "type": "database" },
+    { "participant": "db", "from": 321, "to": 332, "type": "database" },
+    { "participant": "db", "from": 459, "to": 470, "type": "database" },
+    { "participant": "db", "from": 557, "to": 608, "type": "database" },
+    { "participant": "kd100", "from": 367, "to": 613, "type": "external" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "接口对照：我们 → 快递100（出站，7 个）",
+      "items": [
+        "method=order — 文档「二、同城急送下单接口」（上图主路径）",
+        "method=price — 「一、同城急送价格查询接口」（免费，可零成本验签）",
+        "method=cancel — 「三、同城急送取消接口」（可能产生取消费）",
+        "method=addfee — 「四、同城急送加小费接口」",
+        "method=queryCourier — 「六、获取骑手位置信息接口」（仅经纬度，无状态）",
+        "method=batchPrice — 「七、批量查价接口」｜method=batchOrder — 「八、并呼下单接口」"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "接口对照：快递100 → 我们（入站，1 个）",
+      "items": [
+        "回调 callbackUrl — 文档「五、同城急送订单状态回调接口」",
+        "表单编码 taskId + param + sign，sign = MD5(param + salt)",
+        "必须回 {result:true, returnCode:\"200\"}，否则 1 分钟后重推，最多 3 次",
+        "状态 0 / 100 / 210 / 230 / 310 / 515 / 510 / 520 / 720 全部由它驱动"
+      ]
+    }
+  ]
+}

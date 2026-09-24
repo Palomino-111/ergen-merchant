@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "同城配送接入架构与接口生命周期",
+    "locale": "zh-CN",
+    "output": "docs/diagrams/delivery-architecture.html",
+    "viewBox": [1050, 400],
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "dispatch",
+        "label": "发单链路",
+        "focus": ["merchant", "edge", "db", "kd100"],
+        "note": "商家备餐完成后点「呼叫骑手」，由 Edge Function 向快递100 下发真实运力订单。"
+      },
+      {
+        "id": "callback",
+        "label": "回调链路",
+        "focus": ["kd100", "courier", "edge", "db"],
+        "note": "唯一反向链路：快递100 主动 POST 到 callbackUrl，验签后落库。"
+      },
+      {
+        "id": "consumer",
+        "label": "消费者可见",
+        "focus": ["consumer", "edge", "db"],
+        "note": "消费者端读取配送单，展示真实状态与骑手信息。"
+      }
+    ]
+  },
+  "components": [
+    { "id": "consumer", "type": "frontend", "label": "消费者端 App", "sublabel": "Flutter · Supabase SDK", "pos": [40, 72], "size": [150, 60] },
+    { "id": "merchant", "type": "frontend", "label": "商家端", "sublabel": "备餐完成 → 呼叫骑手", "pos": [40, 268], "size": [150, 60] },
+    { "id": "edge", "type": "backend", "label": "Edge Functions", "sublabel": "Supabase · 我们的后端", "brand": "supabase", "pos": [330, 72], "size": [170, 64] },
+    { "id": "db", "type": "database", "label": "Postgres", "sublabel": "meal_delivery_order", "pos": [330, 250], "size": [170, 60] },
+    { "id": "kd100", "type": "external", "label": "快递100 同城急送", "sublabel": "bsamecity/order", "pos": [650, 72], "size": [160, 60] },
+    { "id": "courier", "type": "external", "label": "同城运力 / 骑手", "sublabel": "多品牌抢单", "pos": [880, 72], "size": [150, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Supabase 项目", "wraps": ["edge", "db"], "pad": 16 }
+  ],
+  "connections": [
+    { "from": "consumer", "to": "edge", "label": "① create-order", "variant": "emphasis" },
+    { "from": "merchant", "to": "edge", "label": "② dispatch-delivery-order", "variant": "emphasis" },
+    { "from": "edge", "to": "db", "label": "③ 读写配送单", "labelAt": [415, 200] },
+    { "from": "edge", "to": "kd100", "label": "④ method=order 发单", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [575, 60] },
+    { "from": "kd100", "to": "edge", "label": "⑤ 回调 → 验签落库", "variant": "security", "fromSide": "bottom", "toSide": "bottom" },
+    { "from": "kd100", "to": "courier", "label": "⑥ 派单 / 接单", "variant": "dashed" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "生命周期顺序",
+      "items": [
+        "① 消费者下单 → create-order 落库，初始 awaiting_preparation",
+        "② 商家备餐完成 → dispatch-delivery-order 触发发单",
+        "③ Edge Function 读商家取货地址与收货地址",
+        "④ method=order 下发真实运力，写回 provider_order_id",
+        "⑤ 快递100 回调 → 验签 → 更新状态与骑手 → 消费者可见"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "快递100 同城急送：8 个接口",
+      "items": [
+        "出站 method=price 查价（免费）｜method=batchPrice 批量查价（免费）",
+        "出站 method=order 下单｜method=batchOrder 并呼抢单",
+        "出站 method=cancel 取消（可能产生取消费）｜method=addfee 加小费",
+        "出站 method=queryCourier 骑手位置（仅经纬度，没有状态）",
+        "入站 回调 callbackUrl：POST 表单 taskId + param + sign = MD5(param + salt)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "落地约束",
+      "items": [
+        "回调函数必须 verify_jwt: false（快递100 不带 Supabase JWT）",
+        "callbackUrl ≤ 50 字符，Supabase 原生地址 71 字符放不下",
+        "回调最多推 3 次、间隔 1 分钟：全丢就没有第二次机会",
+        "状态只能单调前进，防伪造「已取消」与迟到的「配送中」"
+      ]
+    }
+  ]
+}
