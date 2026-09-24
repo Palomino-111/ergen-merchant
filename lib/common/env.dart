@@ -20,16 +20,21 @@ class Env {
   Env._();
 
   /// Supabase 项目 URL（PostgREST 接口基址）
+  ///
+  /// 2026-09 起后端换成这个新项目；旧项目 `redkowdpjduavcmzjfep` 里没有商家端账号，
+  /// 连旧项目会一直报 `Invalid login credentials`。
   static const String supabaseUrl = String.fromEnvironment(
     'SUPABASE_URL',
-    defaultValue: 'https://redkowdpjduavcmzjfep.supabase.co',
+    defaultValue: 'https://wmioylfpdbdwnbybkpju.supabase.co',
   );
 
-  /// Supabase anon / publishable key
+  /// Supabase key（新格式 publishable key）
+  ///
+  /// 字段名沿用 `supabaseAnonKey` 是历史原因，值已经是 `sb_publishable_...`。
+  /// 它是面向客户端的公开 key，但仍可以用 `--dart-define` 覆盖。
   static const String supabaseAnonKey = String.fromEnvironment(
     'SUPABASE_ANON_KEY',
-    defaultValue:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJlZGtvd2RwamR1YXZjbXpqZmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE2NzMwMzEsImV4cCI6MjA1NzI0OTAzMX0.2qqZo6Drq9BpqttPr5hwT1yiiVNlfC2ovFZaxsKzB1g',
+    defaultValue: 'sb_publishable_nUsNeaF2lPNRywuwqqSX9g_4T8uvxpC',
   );
 
   /// 调试用的 HTTP 代理（`host:port`，留空表示直连）
