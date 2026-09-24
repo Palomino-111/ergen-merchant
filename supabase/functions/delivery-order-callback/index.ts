@@ -58,70 +58,50 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
   );
 
-  // 审计写入器：吞掉自身异常，只记日志。
-  // 理由：本函数的主职责是「应用状态」。若因为审计写不进去就返回 500，
-  // 快递100 会按文档重试 3 次（间隔 1 分钟），把一个审计故障放大成重复投递。
-  // 所以审计失败不改变响应，但必须留下刺眼的 error 日志。
-  async function audit(row: AuditRow, why: string) {
-    const { error } = await supabase.from('delivery_callback_event').insert(row);
-    if (error) {
-      console.error(`审计写入失败（${why}）: ${JSON.stringify(error)}`);
-    } else {
-      console.log(`审计已记录（${why}）: orderId=${row.provider_order_id} status=${row.status}`);
-    }
-  }
+  // 审计行先建空壳，各出口只改它，最后由 finally 统一落库。
+  // 这样出口不必各自 await audit：少 6 处重复调用，note 成为唯一的失败说明，
+  // 且 catch 分支也能留痕（此前未捕获异常在审计表里是完全不存在的）。
+  const row: AuditRow = {
+    provider: 'kuaidi100',
+    provider_order_id: null,
+    provider_task_id: null,
+    status: null,
+    status_desc: null,
+    courier_name: null,
+    courier_mobile: null,
+    sign_verified: false,
+    applied: false,
+    note: null,
+    raw_param: null
+  };
 
   try {
-    // 快递100 按 form 表单 POST 提交，这里同时兼容 JSON body，便于本地联调。
-    let taskId = '';
-    let paramRaw = '';
-    let sign = '';
-    const contentType = req.headers.get('content-type') ?? '';
-    if (contentType.includes('application/json')) {
-      const body = await req.json();
-      taskId = body.taskId ?? '';
-      sign = body.sign ?? '';
-      paramRaw = typeof body.param === 'string' ? body.param : JSON.stringify(body.param ?? {});
-    } else {
-      const form = await req.formData();
-      taskId = String(form.get('taskId') ?? '');
-      paramRaw = String(form.get('param') ?? '');
-      sign = String(form.get('sign') ?? '');
-    }
+    // 快递100 按文档发 form 表单（x-www-form-urlencoded）。
+    // 不兼容 JSON body：那需要把 param 重新 JSON.stringify 才能参与验签，
+    // 而键序/空格一变签名必然对不上，等于给自己埋一个"必然验签失败"的分支。
+    const form = await req.formData();
+    const taskId = String(form.get('taskId') ?? '');
+    const paramRaw = String(form.get('param') ?? '');
+    const sign = String(form.get('sign') ?? '');
     console.log(`callback taskId: ${taskId}, param: ${paramRaw}, sign: ${sign}`);
 
-    // 先把「已知的」字段填进审计行。此时尚未验签、尚未解析，故 sign_verified/applied 都是 false。
-    // raw_param 存**原始字符串**，不做 parse 后再序列化 —— 那会因键序、空格、数字格式
-    // 的差异失真，而这张表的用途正是「事后重算签名」。
-    const row: AuditRow = {
-      provider: 'kuaidi100',
-      provider_order_id: null,
-      provider_task_id: taskId || null,
-      status: null,
-      status_desc: null,
-      courier_name: null,
-      courier_mobile: null,
-      sign_verified: false,
-      applied: false,
-      note: null,
-      raw_param: paramRaw || null
-    };
+    row.provider_task_id = taskId || null;
+    // raw_param 存**原始字符串**，不做 parse 后再序列化 —— 那会因键序、空格、数字
+    // 格式的差异失真，而这张表的用途正是「事后重算签名」（与验签同一个坑）。
+    row.raw_param = paramRaw || null;
 
     // ---- 1) 验签：sign = MD5(param + salt) ----
-    // param 必须用**原始字符串**参与计算（同上，parse 再 stringify 会算出不同结果）。
     const salt = Deno.env.get('DELIVERY_CALLBACK_SALT');
     if (!salt) {
       // 部署失误，不是回调的问题。仍落一行审计，否则这次投递会彻底消失。
       row.note = '服务端未配置 DELIVERY_CALLBACK_SALT';
-      await audit(row, '缺少 salt');
-      throw new Error('缺少 DELIVERY_CALLBACK_SALT');
+      return json({ result: false, returnCode: '500', message: '服务端未配置回调密钥' }, 500);
     }
     const expected = md5(paramRaw + salt);
     if (!sign || sign.toLowerCase() !== expected.toLowerCase()) {
       // 伪造或串号的回调：不更新任何配送单，但必须留档。
       // 关掉 verify_jwt 之后这是唯一的防线，没有这条记录就等于无痕。
       row.note = '验签失败，未应用';
-      await audit(row, '验签失败');
       console.error(`验签失败, expected: ${expected}, got: ${sign}`);
       return json({ result: false, returnCode: '500', message: '验签失败' }, 401);
     }
@@ -134,21 +114,20 @@ Deno.serve(async (req) => {
     } catch (e) {
       // 验签都过了却解析不了：说明我方与对方的序列化约定出了问题，值得留档排查。
       row.note = `param 不是合法 JSON: ${e instanceof Error ? e.message : String(e)}`;
-      await audit(row, 'param 解析失败');
       return json({ result: false, returnCode: '500', message: 'param 解析失败' }, 400);
     }
 
     const orderId = String(param.orderId ?? '');
     const status = Number(param.status);
+    const statusOk = Number.isFinite(status);
     row.provider_order_id = orderId || null;
-    row.status = Number.isFinite(status) ? status : null;
+    row.status = statusOk ? status : null;
     row.status_desc = param.statusDesc ? String(param.statusDesc) : null;
     row.courier_name = param.courierName ? String(param.courierName) : null;
     row.courier_mobile = param.courierMobile ? String(param.courierMobile) : null;
 
-    if (!orderId || !Number.isFinite(status)) {
+    if (!orderId || !statusOk) {
       row.note = '缺少 orderId 或 status';
-      await audit(row, '字段缺失');
       return json({ result: false, returnCode: '500', message: '缺少 orderId 或 status' }, 400);
     }
 
@@ -173,33 +152,49 @@ Deno.serve(async (req) => {
       update.dispatch_failed_reason = String(param.cancelReason);
     }
 
-    // 按快递100 订单号定位配送单。provider_order_id 是下单成功时落库的。
+    // 按快递100 订单号定位配送单。
+    // 必须同时过滤 delivery_provider：库里的唯一索引是 (delivery_provider,
+    // provider_order_id) 复合索引，provider_order_id **单列并不唯一**。
+    // 只按订单号更新，将来接入第二家运力且撞号时会同时命中两行，静默改错单。
     const { data, error } = await supabase
       .from('meal_delivery_order')
       .update(update)
+      .eq('delivery_provider', 'kuaidi100')
       .eq('provider_order_id', orderId)
       .select('id');
     console.log(`updated: ${JSON.stringify(data)}, error: ${JSON.stringify(error)}`);
 
     if (error) {
       row.note = `落库失败: ${error.message}`;
-      await audit(row, '落库失败');
       return json({ result: false, returnCode: '500', message: error.message }, 500);
     }
     if (!data?.length) {
       // 找不到单也返回成功，否则快递100 会重复回调 3 次；留日志人工排查即可。
       // applied 保持 false，这张审计行正是「可用于重放」的那一类。
       row.note = '未找到匹配的配送单，未应用';
-      await audit(row, '订单不存在');
       console.error(`未找到 provider_order_id=${orderId} 的配送单`);
       return json({ result: true, returnCode: '200', message: '订单不存在，已忽略' });
     }
 
+    // ponytail: 不做乱序保护 —— 若先收 520 再收重试的 310，订单会被改回配送中。
+    // 依赖快递100 按序推送；真出现回退再加跨状态偏序校验（720 是任意态可达的终态，
+    // 偏序不是一行能定义的，现在写等于盲猜）。
     row.applied = true;
-    await audit(row, '已应用');
     return json({ result: true, returnCode: '200', message: '提交成功' });
   } catch (err) {
+    // 未捕获异常也必须留痕，否则这次投递在审计表里不存在。
+    row.note ??= `未捕获异常: ${err instanceof Error ? err.message : String(err)}`;
     console.error(err);
     return json({ result: false, returnCode: '500', message: '服务器内部错误' }, 500);
+  } finally {
+    // 唯一的审计落库点，覆盖上面所有 return 与 catch 分支。
+    // 写入失败不改变响应，只记 error 日志：否则会把审计故障放大成
+    // 快递100 的 3 次重试投递。
+    const { error } = await supabase.from('delivery_callback_event').insert(row);
+    if (error) {
+      console.error(`审计写入失败（${row.note ?? '已应用'}）: ${JSON.stringify(error)}`);
+    } else {
+      console.log(`审计已记录: orderId=${row.provider_order_id} status=${row.status} applied=${row.applied}`);
+    }
   }
 });
