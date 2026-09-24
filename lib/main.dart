@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:fluwx/fluwx.dart';
@@ -19,7 +21,31 @@ import 'common/theme/app_theme.dart';
 import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'common/utility/common.dart';
 
+/// 调试用 HTTP 代理。
+///
+/// dart:io 默认直连、**不读系统代理**，所以手机上开梯子（系统代理模式）对 App 无效，
+/// 国内直连 supabase.co 时 TLS 握手会被重置（Connection reset / handshake terminated）。
+/// 用 `--dart-define=HTTP_PROXY=host:port` 打开；不传时行为与原来完全一致。
+class _DebugHttpOverrides extends HttpOverrides {
+  _DebugHttpOverrides(this.proxy);
+
+  final String proxy;
+
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    final client = super.createHttpClient(context);
+    client.findProxy = (uri) => 'PROXY $proxy';
+    return client;
+  }
+}
+
+const String _httpProxy = String.fromEnvironment('HTTP_PROXY');
+
 Future<void> main() async {
+  if (_httpProxy.isNotEmpty) {
+    print('使用调试代理: $_httpProxy');
+    HttpOverrides.global = _DebugHttpOverrides(_httpProxy);
+  }
   await initializeBeforeRunApp();
   runApp(const MyApp());
 }
@@ -61,9 +87,9 @@ final supabase = Supabase.instance.client;
 Future<void> initSupabase() async {
   // 初始化Supabase
   await Supabase.initialize(
-    url: 'https://redkowdpjduavcmzjfep.supabase.co',
-    anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJlZGtvd2RwamR1YXZjbXpqZmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE2NzMwMzEsImV4cCI6MjA1NzI0OTAzMX0.2qqZo6Drq9BpqttPr5hwT1yiiVNlfC2ovFZaxsKzB1g',
+    url: 'https://wmioylfpdbdwnbybkpju.supabase.co',
+    publishableKey:
+        'sb_publishable_nUsNeaF2lPNRywuwqqSX9g_4T8uvxpC',
   );
   // 执行那些依赖supabase初始化的操作
   AccountController.to.listenToAuthChanges();
