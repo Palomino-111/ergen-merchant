@@ -17,13 +17,12 @@ param(
   [string]$ProjectRef = 'wmioylfpdbdwnbybkpju',
   [string]$SupabaseUrl = 'https://wmioylfpdbdwnbybkpju.supabase.co',
   # 回调 URL。文档写「最长50字符」，但 2026-09-24 逐个长度实测**并不强制**
-  # （不带/50/70/88/255 字符全部 code 200），复现见 scripts/test-callback-url-limit.ps1。
-  # 所以直接用真实 slug 即可，不需要短域名或跳板。
-  # ⚠️ 线上 slug 是自动生成的：名为 delivery-order-callback，slug 为 clever-responder。
-  #    换项目/重部署后先用 supabase functions list 核对 slug 再改这里。
-  [string]$CallbackUrl = 'https://wmioylfpdbdwnbybkpju.supabase.co/functions/v1/clever-responder',
-  # 部署后函数会拿到的 slug。留空则沿用线上已有的 slug（避免把 URL 改指到不存在的函数）。
-  [string]$Slug = 'clever-responder'
+  # （不带/50/70/88/255 字符全部 code 200），所以直接用真实 slug，无需短域名或跳板。
+  # ⚠️ slug 会变：首次部署时被自动生成成 clever-responder，重新部署后才变成
+  #    delivery-order-callback。换项目/重部署后先用 supabase functions list 核对再改这里。
+  [string]$CallbackUrl = 'https://wmioylfpdbdwnbybkpju.supabase.co/functions/v1/delivery-order-callback',
+  # 必须与线上真实 slug 一致：写成别的会另建一个函数，而回调仍打在旧 slug 上。
+  [string]$Slug = 'delivery-order-callback'
 )
 
 $ErrorActionPreference = 'Stop'

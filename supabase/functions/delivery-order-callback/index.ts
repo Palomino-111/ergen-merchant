@@ -4,6 +4,12 @@
 //   快递100 的服务器不带 Supabase JWT，若开启 JWT 校验，请求会在函数入口被直接
 //   拒绝，回调永远进不来。因此鉴权改用快递100 自己的签名：sign = MD5(param + salt)，
 //   salt 是下单时随 param 一起发出去的 DELIVERY_CALLBACK_SALT。
+//
+// 两件事，职责分开：
+//   1. 应用状态：验签通过 → 更新 meal_delivery_order（只在通过时做）
+//   2. 审计留档：**无论验签是否通过**都往 delivery_callback_event 落一行
+//      （约定见迁移 20260922170000 第 4 节：sign_verified 为 false 时不得用于
+//       更新配送单，仅留档；applied 为 false 时可用于重放）
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import md5 from 'npm:blueimp-md5@2.19.0';
@@ -30,7 +36,41 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+// 审计行。字段与 delivery_callback_event 一一对应。
+type AuditRow = {
+  provider: string;
+  provider_order_id: string | null;
+  provider_task_id: string | null;
+  status: number | null;
+  status_desc: string | null;
+  courier_name: string | null;
+  courier_mobile: string | null;
+  sign_verified: boolean;
+  applied: boolean;
+  note: string | null;
+  raw_param: string | null;
+};
+
 Deno.serve(async (req) => {
+  // service_role：回调没有用户身份，走不了 RLS；审计表也只对 service_role 开放。
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL') ?? '',
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+  );
+
+  // 审计写入器：吞掉自身异常，只记日志。
+  // 理由：本函数的主职责是「应用状态」。若因为审计写不进去就返回 500，
+  // 快递100 会按文档重试 3 次（间隔 1 分钟），把一个审计故障放大成重复投递。
+  // 所以审计失败不改变响应，但必须留下刺眼的 error 日志。
+  async function audit(row: AuditRow, why: string) {
+    const { error } = await supabase.from('delivery_callback_event').insert(row);
+    if (error) {
+      console.error(`审计写入失败（${why}）: ${JSON.stringify(error)}`);
+    } else {
+      console.log(`审计已记录（${why}）: orderId=${row.provider_order_id} status=${row.status}`);
+    }
+  }
+
   try {
     // 快递100 按 form 表单 POST 提交，这里同时兼容 JSON body，便于本地联调。
     let taskId = '';
@@ -50,37 +90,74 @@ Deno.serve(async (req) => {
     }
     console.log(`callback taskId: ${taskId}, param: ${paramRaw}, sign: ${sign}`);
 
-    // 验签：sign = MD5(param + salt)。
-    // param 必须用**原始字符串**参与计算 —— JSON.parse 再 JSON.stringify 会因键序、
-    // 空格、数字格式的差异算出不同结果，导致合法回调被判成验签失败。
+    // 先把「已知的」字段填进审计行。此时尚未验签、尚未解析，故 sign_verified/applied 都是 false。
+    // raw_param 存**原始字符串**，不做 parse 后再序列化 —— 那会因键序、空格、数字格式
+    // 的差异失真，而这张表的用途正是「事后重算签名」。
+    const row: AuditRow = {
+      provider: 'kuaidi100',
+      provider_order_id: null,
+      provider_task_id: taskId || null,
+      status: null,
+      status_desc: null,
+      courier_name: null,
+      courier_mobile: null,
+      sign_verified: false,
+      applied: false,
+      note: null,
+      raw_param: paramRaw || null
+    };
+
+    // ---- 1) 验签：sign = MD5(param + salt) ----
+    // param 必须用**原始字符串**参与计算（同上，parse 再 stringify 会算出不同结果）。
     const salt = Deno.env.get('DELIVERY_CALLBACK_SALT');
     if (!salt) {
+      // 部署失误，不是回调的问题。仍落一行审计，否则这次投递会彻底消失。
+      row.note = '服务端未配置 DELIVERY_CALLBACK_SALT';
+      await audit(row, '缺少 salt');
       throw new Error('缺少 DELIVERY_CALLBACK_SALT');
     }
     const expected = md5(paramRaw + salt);
     if (!sign || sign.toLowerCase() !== expected.toLowerCase()) {
+      // 伪造或串号的回调：不更新任何配送单，但必须留档。
+      // 关掉 verify_jwt 之后这是唯一的防线，没有这条记录就等于无痕。
+      row.note = '验签失败，未应用';
+      await audit(row, '验签失败');
       console.error(`验签失败, expected: ${expected}, got: ${sign}`);
       return json({ result: false, returnCode: '500', message: '验签失败' }, 401);
     }
+    row.sign_verified = true;
 
-    const param = JSON.parse(paramRaw) as Record<string, unknown>;
+    // ---- 2) 解析 param ----
+    let param: Record<string, unknown>;
+    try {
+      param = JSON.parse(paramRaw) as Record<string, unknown>;
+    } catch (e) {
+      // 验签都过了却解析不了：说明我方与对方的序列化约定出了问题，值得留档排查。
+      row.note = `param 不是合法 JSON: ${e instanceof Error ? e.message : String(e)}`;
+      await audit(row, 'param 解析失败');
+      return json({ result: false, returnCode: '500', message: 'param 解析失败' }, 400);
+    }
+
     const orderId = String(param.orderId ?? '');
     const status = Number(param.status);
+    row.provider_order_id = orderId || null;
+    row.status = Number.isFinite(status) ? status : null;
+    row.status_desc = param.statusDesc ? String(param.statusDesc) : null;
+    row.courier_name = param.courierName ? String(param.courierName) : null;
+    row.courier_mobile = param.courierMobile ? String(param.courierMobile) : null;
+
     if (!orderId || !Number.isFinite(status)) {
+      row.note = '缺少 orderId 或 status';
+      await audit(row, '字段缺失');
       return json({ result: false, returnCode: '500', message: '缺少 orderId 或 status' }, 400);
     }
 
-    // 用 service_role 写库：回调没有用户身份，走不了 RLS。
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
-
+    // ---- 3) 应用到配送单 ----
     const update: Record<string, unknown> = {
       provider_status: status,
-      provider_status_desc: param.statusDesc ?? null,
-      courier_name: param.courierName ?? null,
-      courier_mobile: param.courierMobile ?? null,
+      provider_status_desc: row.status_desc,
+      courier_name: row.courier_name,
+      courier_mobile: row.courier_mobile,
       last_callback_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -103,15 +180,23 @@ Deno.serve(async (req) => {
       .eq('provider_order_id', orderId)
       .select('id');
     console.log(`updated: ${JSON.stringify(data)}, error: ${JSON.stringify(error)}`);
+
     if (error) {
+      row.note = `落库失败: ${error.message}`;
+      await audit(row, '落库失败');
       return json({ result: false, returnCode: '500', message: error.message }, 500);
     }
     if (!data?.length) {
       // 找不到单也返回成功，否则快递100 会重复回调 3 次；留日志人工排查即可。
+      // applied 保持 false，这张审计行正是「可用于重放」的那一类。
+      row.note = '未找到匹配的配送单，未应用';
+      await audit(row, '订单不存在');
       console.error(`未找到 provider_order_id=${orderId} 的配送单`);
       return json({ result: true, returnCode: '200', message: '订单不存在，已忽略' });
     }
 
+    row.applied = true;
+    await audit(row, '已应用');
     return json({ result: true, returnCode: '200', message: '提交成功' });
   } catch (err) {
     console.error(err);

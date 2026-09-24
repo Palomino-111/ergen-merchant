@@ -14,6 +14,17 @@ verify_jwt = true
 # 由快递100 服务器回调（订单状态变更推送），**不带** Supabase JWT。
 # verify_jwt = true 会让请求在函数入口被直接拒绝，回调永远进不来，
 # 因此必须为 false，改用快递100 的 sign = MD5(param + salt) 自校验。
+#
+# 线上 slug 是 delivery-order-callback（首次部署时曾被自动生成成 clever-responder，
+# 重新部署后才对上）。URL = https://<ref>.supabase.co/functions/v1/delivery-order-callback
+#
+# 本函数做两件事，职责分开：
+#   1. 应用状态 → 验签通过才更新 meal_delivery_order
+#   2. 审计留档 → **无论验签是否通过**都往 delivery_callback_event 落一行
+#      （约定见迁移 20260922170000 第 4 节：sign_verified=false 不得用于更新配送单；
+#        applied=false 可用于重放；raw_param 存原始报文以便事后重算签名）
+#   审计写入失败不改变响应，只记 error 日志 —— 否则会把审计故障放大成
+#   快递100 的 3 次重试投递。
 verify_jwt = false
 
 # ✅ callbackUrl 长度限制：实测**并不存在**，别再为 50 字符做妥协
