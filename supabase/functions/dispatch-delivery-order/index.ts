@@ -165,12 +165,20 @@ Deno.serve(async (req) => {
       throw new Error('缺少 DELIVERY_CALLBACK_SALT');
     }
     param.salt = salt;
-    // callbackUrl 受快递100 50 字符长度限制，短域名尚未确定，暂不强制配置。
+    // callbackUrl 受快递100 文档 50 字符长度限制，而本项目函数 URL 前缀
+    // （https://wmioylfpdbdwnbybkpju.supabase.co/functions/v1/）单独就 54 字符，
+    // 拼上函数名必然超限。绕法见 supabase/config.toml：
+    // 网关只按第一段路由，故用短 slug 的既有函数当跳板、真实目标放第二段。
     // 未配置时单仍可发出，只是拿不到状态回调。
     const callbackUrl = Deno.env.get('DELIVERY_CALLBACK_URL');
     if (callbackUrl) {
       param.callbackUrl = callbackUrl;
+    } else {
+      console.warn('未配置 DELIVERY_CALLBACK_URL，本单不会收到状态回调');
     }
+    // 把最终 param 打出来：callbackUrl/salt 是否真的带上，只看日志才能确认，
+    // 否则「回调没来」会被误判成快递100 的问题。
+    console.log(`callbackUrl: ${callbackUrl ?? '(未配置)'}`);
     // 9. 发单
     const resp = await callKuaidi100(param);
     if (!resp.success || resp.code !== 200 || !resp.data?.orderId) {

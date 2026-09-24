@@ -10,6 +10,37 @@ project_id = "wmioylfpdbdwnbybkpju"
 # 并显式校验 merchant.user_id === auth.uid()。
 verify_jwt = true
 
-# 后续新增 delivery-order-callback 时注意：
-#   快递100 的回调**不带** Supabase JWT，若 verify_jwt = true，请求会在函数入口
-#   被直接拒绝。该函数必须 verify_jwt = false，并改用 MD5(param + salt) 自校验。
+[functions.delivery-order-callback]
+# 由快递100 服务器回调（订单状态变更推送），**不带** Supabase JWT。
+# verify_jwt = true 会让请求在函数入口被直接拒绝，回调永远进不来，
+# 因此必须为 false，改用快递100 的 sign = MD5(param + salt) 自校验。
+verify_jwt = false
+
+# ✅ callbackUrl 长度限制：实测**并不存在**，别再为 50 字符做妥协
+#    文档写「长度最大50」，但 2026-09-24 直连测试环境逐个长度实测，全部返回 code 200：
+#      不带 / 50 / 70 / 88 / 255 字符  →  均下单成功
+#    复现脚本：scripts/test-callback-url-limit.ps1
+#    注意复现时 price 必须 > 0，否则会先被 30005「物品总金额必须大于0」挡下，
+#    根本走不到 callbackUrl 校验，得到的是假阴性（这个坑踩过一次）。
+#
+#    → 结论：直接用下面这个 70 字符的 URL 即可，无需短域名、无需跳板。
+#      DELIVERY_CALLBACK_URL =
+#        https://wmioylfpdbdwnbybkpju.supabase.co/functions/v1/clever-responder
+#      （70 字符 = 前缀 54 + slug "clever-responder" 16）
+#
+#    ⚠️ 线上部署时 slug 是自动生成的（名为 delivery-order-callback，slug 为
+#       clever-responder），与项目里其他函数同一风格（如 rapid-endpoint）。
+#       改 URL 前先用 supabase functions list 核对当前 slug，别照抄上面的值。
+#
+#    （历史备注）Supabase 网关只按第一段路径路由，其后的路径段会被原样透传：
+#      /functions/v1/HelloWorld/delivery-order-callback -> 200（仍进 HelloWorld）
+#      /functions/v1/delivery-order-callback/x          -> 404
+#      既然长度不受限，这个跳板技巧已无必要，仅作记录。
+
+# ⚠️ 部署回调函数时必须 verify_jwt = false（2026-09-24 实测踩到）：
+#    首次部署用的是 verify_jwt = true，结果快递100 的回调在网关层就被挡掉：
+#      POST /functions/v1/clever-responder  （无 Authorization）
+#        -> 401 {"code":"UNAUTHORIZED_NO_AUTH_HEADER","message":"Missing authorization header"}
+#    带上 JWT 再打同一个请求则返回 200 {"result":true,"returnCode":"200"}，
+#    说明函数本身没问题，纯粹是入口的 JWT 校验把回调拒了。
+#    改 false 后，鉴权完全依赖函数内的 MD5(param + salt) 验签（错签名实测返回 401 验签失败）。
