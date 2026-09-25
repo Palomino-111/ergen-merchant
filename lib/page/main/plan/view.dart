@@ -15,6 +15,7 @@ import 'package:zheergen_merchant_end/common/widget/keep_alive_scaffold.dart';
 import '../../../common/dimensions.dart';
 import '../../../common/exception/showable_exception.dart';
 import '../../../common/models/dish_sku.dart';
+import '../../../common/models/dispatch_result.dart';
 import '../../../common/models/meal.dart';
 import '../../../common/models/meal_delivery_order.dart';
 import '../../../common/utility/common.dart';
@@ -551,6 +552,11 @@ class PlanStatefulWidget extends State<PlanPage>
               SizedBox(height: Dimensions.margin16),
             if (!notShowStartDeliveryButton)
               buildStartDeliveryButton(context, mealDeliveryOrder, index),
+            // 派单（呼叫骑手）
+            if (!notShowStartDeliveryButton)
+              SizedBox(height: Dimensions.margin16),
+            if (!notShowStartDeliveryButton)
+              buildDispatchButton(context, mealDeliveryOrder, index),
             // 菜品列表
             SizedBox(height: Dimensions.margin16),
             // 列表接口已经把 meal / dish_sku 嵌套查回来了，直接用，避免每个 item
@@ -683,6 +689,57 @@ class PlanStatefulWidget extends State<PlanPage>
       ),
       onPressed: () async {
         showConfirmStartDeliveryAlertDialog(
+          context,
+          mealDeliveryOrder,
+          index,
+        );
+      },
+      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+    );
+  }
+
+  /**
+   * 派单按钮（呼叫骑手）
+   *
+   * 注意：点击后会向骑手下发**真实运力订单并产生真实费用**，
+   * 所以这里不直接发请求，必须先弹二次确认
+   */
+  CupertinoButton buildDispatchButton(
+    BuildContext context,
+    MealDeliveryOrder mealDeliveryOrder,
+    int index,
+  ) {
+    return CupertinoButton(
+      minSize: Dimensions.button60,
+      padding: EdgeInsets.only(
+        left: Dimensions.padding16,
+        right: Dimensions.padding16,
+        top: Dimensions.padding16,
+        bottom: Dimensions.padding16,
+      ),
+      borderRadius: BorderRadius.all(
+        Radius.circular(Dimensions.borderRadius12),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              "派单",
+              textAlign: TextAlign.left,
+              style: TextStyle(
+                fontSize: Dimensions.fontSize32,
+              ),
+            ),
+          ),
+          SizedBox(width: Dimensions.padding8),
+          Icon(
+            size: Dimensions.iconSize32,
+            Icons.send,
+          ),
+        ],
+      ),
+      onPressed: () async {
+        showConfirmDispatchAlertDialog(
           context,
           mealDeliveryOrder,
           index,
@@ -827,6 +884,93 @@ class PlanStatefulWidget extends State<PlanPage>
           // 手动-1，就不浪费服务端资源了
           logic.awaitingPreparationMealDeliveryOrderController.count.value -= 1;
         }
+      }
+    });
+  }
+
+  /**
+   * 确认派单（呼叫骑手）
+   *
+   * 这一步会花**真钱**：服务端会向快递100 下发真实运力订单并扣费，
+   * 所以内容上必须明确告知费用，逻辑上任何情况都不要自动重试
+   */
+  Future<void> showConfirmDispatchAlertDialog(
+    BuildContext context,
+    MealDeliveryOrder mealDeliveryOrder,
+    int index,
+  ) async {
+    showDialog<String>(
+      context: context,
+      builder: (context) => TextDialog(
+        title: "确认呼叫骑手？",
+        content: "将向骑手派发真实运力订单，并产生真实配送费用。",
+        actions: [
+          CupertinoButton(
+            minSize: Dimensions.button60,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+            child: Text(
+              "确认派单",
+              style: TextStyle(
+                fontSize: Dimensions.fontSize32,
+              ),
+            ),
+            onPressed: () => Navigator.pop(context, 'confirm'),
+          ),
+          SizedBox(height: Dimensions.margin16),
+          CupertinoButton(
+            minSize: Dimensions.button60,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+            child: Text(
+              "取消",
+              style: TextStyle(
+                fontSize: Dimensions.fontSize32,
+              ),
+            ),
+            onPressed: () => Navigator.pop(context, 'cancel'),
+          ),
+        ],
+      ),
+    ).then((value) async {
+      if (value != 'confirm') return;
+
+      // 状态检查
+      // 列表数据可能是几分钟前拉的，用户点的时候服务端状态可能早变了
+      // 只有 awaiting_preparation / preparing 可发单；
+      // awaiting_delivery 是派单成功后的目标状态，放行它等于允许重复派单（重复扣费）
+      final status = DeliveryStatus.fromKey(mealDeliveryOrder.status);
+      if (status != DeliveryStatus.awaitingPreparation &&
+          status != DeliveryStatus.preparing) {
+        showTextToast(
+          context,
+          "状态错误！\n"
+          "当前状态：${status?.localized(context)}",
+        );
+        return;
+      }
+
+      // 派单。失败时 logic 内部已经提示过了，返回 null 表示没成功
+      final DispatchResult? result = await logic.dispatchMealDeliveryOrder(
+        context,
+        mealDeliveryOrder,
+      );
+
+      // await 之后当前页面可能已经被销毁，用 context 前必须检查
+      if (!context.mounted) return;
+      if (result == null) return;
+
+      showTextToast(
+        context,
+        result.alreadyDispatched ? "该单已派过，本次未重复下单" : "🥳 派单成功",
+      );
+
+      // 局部更新这一项，不要整体刷新列表
+      final controller = logic.awaitingPreparationMealDeliveryOrderController;
+      controller.awaitingPreparationMealDeliveryOrders[index] =
+          mealDeliveryOrder.copyWith(status: result.status);
+      // 派单后状态变为 awaiting_delivery，已不属于「待制作」，手动-1
+      // 幂等返回时不减：那种情况下这单本来就不该在待制作列表里（是本地数据陈旧）
+      if (!result.alreadyDispatched) {
+        controller.count.value -= 1;
       }
     });
   }
