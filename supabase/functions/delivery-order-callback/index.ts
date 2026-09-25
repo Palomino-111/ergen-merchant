@@ -135,11 +135,15 @@ Deno.serve(async (req) => {
     const update: Record<string, unknown> = {
       provider_status: status,
       provider_status_desc: row.status_desc,
-      courier_name: row.courier_name,
-      courier_mobile: row.courier_mobile,
       last_callback_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
+    if (row.courier_name) {
+      update.courier_name = row.courier_name;
+    }
+    if (row.courier_mobile) {
+      update.courier_mobile = row.courier_mobile;
+    }
     const mapped = STATUS_MAP[status];
     if (mapped) {
       update.status = mapped;
@@ -162,17 +166,15 @@ Deno.serve(async (req) => {
       .eq('delivery_provider', 'kuaidi100')
       .eq('provider_order_id', orderId)
       .select('id');
-    console.log(`updated: ${JSON.stringify(data)}, error: ${JSON.stringify(error)}`);
 
     if (error) {
       row.note = `落库失败: ${error.message}`;
       return json({ result: false, returnCode: '500', message: error.message }, 500);
     }
     if (!data?.length) {
-      // 找不到单也返回成功，否则快递100 会重复回调 3 次；留日志人工排查即可。
-      // applied 保持 false，这张审计行正是「可用于重放」的那一类。
+      // 找不到单也返回成功，否则快递100 会重复回调 3 次。
+      // applied 保持 false，这张审计行就是事后排查/重放的依据（note 已持久化，不再打日志）。
       row.note = '未找到匹配的配送单，未应用';
-      console.error(`未找到 provider_order_id=${orderId} 的配送单`);
       return json({ result: true, returnCode: '200', message: '订单不存在，已忽略' });
     }
 
@@ -183,7 +185,7 @@ Deno.serve(async (req) => {
     return json({ result: true, returnCode: '200', message: '提交成功' });
   } catch (err) {
     // 未捕获异常也必须留痕，否则这次投递在审计表里不存在。
-    row.note ??= `未捕获异常: ${err instanceof Error ? err.message : String(err)}`;
+    row.note = `未捕获异常: ${err instanceof Error ? err.message : String(err)}`;
     console.error(err);
     return json({ result: false, returnCode: '500', message: '服务器内部错误' }, 500);
   } finally {
