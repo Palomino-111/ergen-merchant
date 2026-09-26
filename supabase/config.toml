@@ -10,13 +10,29 @@ project_id = "wmioylfpdbdwnbybkpju"
 # 并显式校验 merchant.user_id === auth.uid()。
 verify_jwt = true
 
+[functions.cancel-delivery-order]
+# 由商家端调用（订单需要取消配送时）。与 dispatch-delivery-order 同一套鉴权：
+# 转发用户 JWT 走 RLS，并显式校验 merchant.user_id === auth.uid()。
+#
+# ⚠️ 取消**可能产生费用**（快递100 文档第 3 节），返回的 cancelFee 落 cancel_fee 列。
+# 远端 method=cancel。注意：**仓库源码里硬编码的是测试网关**
+# （http://e-test.kuaidilab.com/api/bsamecity/order），与线上部署一致；
+# 正式地址 https://api.kuaidi100.com/bsamecity/order 见函数注释。改地址前先确认环境。
+#
+# ⛔ 部署顺序：本函数写 cancel_fee / cancel_reason 两列，必须**先**跑迁移
+#    20260924100000_add_cancel_fields.sql 再部署函数。
+#    PostgREST 遇到未知列会整条 update 拒绝（PGRST204），不会部分应用 ——
+#    迁移没跑就部署，快递100 侧取消成功（可能已扣费）而本地状态一个字都写不进去，
+#    函数每次都返回 500「取消已成功但本地落库失败」，且幂等判断依赖的
+#    status='cancelled' 永远写不出来，重试永远不收敛。
+verify_jwt = true
+
 [functions.get-courier-position]
 # 由商家端调用（在途订单看骑手位置）。同样转发用户 JWT + 显式校验商家归属。
 #
 # ⚠️ 该接口在快递100 侧**计费**（文档 6.6 的 30004 处理方式写着「账号无可用余额，需要充值」），
 # 因此函数不做任何轮询/重试，也刻意没做成客户端可直连的读接口。
-# 远端 method=queryCourier。源码里硬编码的是测试网关
-# （http://e-test.kuaidilab.com/api/bsamecity/order）；正式地址见函数注释。
+# 远端 method=queryCourier。地址同 cancel-delivery-order：源码里是测试网关。
 verify_jwt = true
 
 [functions.delivery-order-callback]
