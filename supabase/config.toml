@@ -10,6 +10,15 @@ project_id = "wmioylfpdbdwnbybkpju"
 # 并显式校验 merchant.user_id === auth.uid()。
 verify_jwt = true
 
+[functions.get-courier-position]
+# 由商家端调用（在途订单看骑手位置）。同样转发用户 JWT + 显式校验商家归属。
+#
+# ⚠️ 该接口在快递100 侧**计费**（文档 6.6 的 30004 处理方式写着「账号无可用余额，需要充值」），
+# 因此函数不做任何轮询/重试，也刻意没做成客户端可直连的读接口。
+# 远端 method=queryCourier。源码里硬编码的是测试网关
+# （http://e-test.kuaidilab.com/api/bsamecity/order）；正式地址见函数注释。
+verify_jwt = true
+
 [functions.delivery-order-callback]
 # 由快递100 服务器回调（订单状态变更推送），**不带** Supabase JWT。
 # verify_jwt = true 会让请求在函数入口被直接拒绝，回调永远进不来，
