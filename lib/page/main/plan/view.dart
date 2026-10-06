@@ -449,7 +449,7 @@ class PlanStatefulWidget extends State<PlanPage>
     int index,
   ) {
     final deliveryStatus = DeliveryStatus.fromKey(mealDeliveryOrder.status);
-    final notShowStartDeliveryButton =
+    final notShowDispatchButton =
         deliveryStatus != DeliveryStatus.awaitingPreparation &&
             deliveryStatus != DeliveryStatus.preparing;
     return Container(
@@ -547,15 +547,10 @@ class PlanStatefulWidget extends State<PlanPage>
                 ),
               ),
             ),
-            // 开始配送
-            if (!notShowStartDeliveryButton)
-              SizedBox(height: Dimensions.margin16),
-            if (!notShowStartDeliveryButton)
-              buildStartDeliveryButton(context, mealDeliveryOrder, index),
             // 派单（呼叫骑手）
-            if (!notShowStartDeliveryButton)
+            if (!notShowDispatchButton)
               SizedBox(height: Dimensions.margin16),
-            if (!notShowStartDeliveryButton)
+            if (!notShowDispatchButton)
               buildDispatchButton(context, mealDeliveryOrder, index),
             // 菜品列表
             SizedBox(height: Dimensions.margin16),
@@ -650,51 +645,6 @@ class PlanStatefulWidget extends State<PlanPage>
         onPressed: () async {},
         color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
       ),
-    );
-  }
-
-  CupertinoButton buildStartDeliveryButton(
-    BuildContext context,
-    MealDeliveryOrder mealDeliveryOrder,
-    int index,
-  ) {
-    return CupertinoButton(
-      minSize: Dimensions.button60,
-      padding: EdgeInsets.only(
-        left: Dimensions.padding16,
-        right: Dimensions.padding16,
-        top: Dimensions.padding16,
-        bottom: Dimensions.padding16,
-      ),
-      borderRadius: BorderRadius.all(
-        Radius.circular(Dimensions.borderRadius12),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              "开始配送",
-              textAlign: TextAlign.left,
-              style: TextStyle(
-                fontSize: Dimensions.fontSize32,
-              ),
-            ),
-          ),
-          SizedBox(width: Dimensions.padding8),
-          Icon(
-            size: Dimensions.iconSize32,
-            Icons.delivery_dining,
-          ),
-        ],
-      ),
-      onPressed: () async {
-        showConfirmStartDeliveryAlertDialog(
-          context,
-          mealDeliveryOrder,
-          index,
-        );
-      },
-      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
     );
   }
 
@@ -812,80 +762,6 @@ class PlanStatefulWidget extends State<PlanPage>
         ],
       ),
     );
-  }
-
-  Future<void> showConfirmStartDeliveryAlertDialog(
-    BuildContext context,
-    MealDeliveryOrder mealDeliveryOrder,
-    int index,
-  ) async {
-    showDialog<String>(
-      context: context,
-      builder: (context) => TextDialog(
-        title: "确认开始配送？",
-        actions: [
-          CupertinoButton(
-            minSize: Dimensions.button60,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
-            child: Text(
-              "确认",
-              style: TextStyle(
-                fontSize: Dimensions.fontSize32,
-              ),
-            ),
-            onPressed: () => Navigator.pop(context, 'confirm'),
-          ),
-          SizedBox(height: Dimensions.margin16),
-          CupertinoButton(
-            minSize: Dimensions.button60,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
-            child: Text(
-              "取消",
-              style: TextStyle(
-                fontSize: Dimensions.fontSize32,
-              ),
-            ),
-            onPressed: () => Navigator.pop(context, 'cancel'),
-          ),
-        ],
-      ),
-    ).then((value) async {
-      if (value == 'confirm') {
-        final status = DeliveryStatus.fromKey(mealDeliveryOrder.status);
-        // 状态检查
-        if (status != DeliveryStatus.awaitingPreparation &&
-            status != DeliveryStatus.preparing) {
-          showTextToast(
-            context,
-            "状态错误！\n"
-            "当前状态：${status?.localized(context)}",
-          );
-          return;
-        }
-        // 深拷贝 并 改状态为待配送
-        final newMealDeliveryOrder = mealDeliveryOrder.copyWith(
-          status: DeliveryStatus.awaitingDelivery.key,
-        );
-        // 更新配送订单状态
-        bool isSuccess = await logic.updateMealDeliveryOrder(
-          context,
-          newMealDeliveryOrder,
-        );
-        if (isSuccess) {
-          // fixme 这种方式好像可以实现局部更新，测试一下，解决局部更新问题，当然，多个Tab时这里可以直接用removeWhere解决更好
-          // logic.mealDeliveryOrderController.mealDeliveryOrders.replaceRange(
-          //   index,
-          //   index,
-          //   [newMealDeliveryOrder],
-          // );
-          logic.awaitingPreparationMealDeliveryOrderController
-                  .awaitingPreparationMealDeliveryOrders[index] =
-              newMealDeliveryOrder;
-          // 手动-1，就不浪费服务端资源了
-          logic.awaitingPreparationMealDeliveryOrderController.count.value -= 1;
-        }
-      }
-    });
   }
 
   /**
