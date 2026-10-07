@@ -551,7 +551,7 @@ class PlanStatefulWidget extends State<PlanPage>
             if (!notShowDispatchButton)
               SizedBox(height: Dimensions.margin16),
             if (!notShowDispatchButton)
-              buildDispatchButton(context, mealDeliveryOrder, index),
+              buildDispatchButton(context, mealDeliveryOrder),
             // 菜品列表
             SizedBox(height: Dimensions.margin16),
             // 列表接口已经把 meal / dish_sku 嵌套查回来了，直接用，避免每个 item
@@ -657,7 +657,6 @@ class PlanStatefulWidget extends State<PlanPage>
   CupertinoButton buildDispatchButton(
     BuildContext context,
     MealDeliveryOrder mealDeliveryOrder,
-    int index,
   ) {
     return CupertinoButton(
       minSize: Dimensions.button60,
@@ -692,7 +691,6 @@ class PlanStatefulWidget extends State<PlanPage>
         showConfirmDispatchAlertDialog(
           context,
           mealDeliveryOrder,
-          index,
         );
       },
       color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
@@ -773,7 +771,6 @@ class PlanStatefulWidget extends State<PlanPage>
   Future<void> showConfirmDispatchAlertDialog(
     BuildContext context,
     MealDeliveryOrder mealDeliveryOrder,
-    int index,
   ) async {
     showDialog<String>(
       context: context,
@@ -839,15 +836,16 @@ class PlanStatefulWidget extends State<PlanPage>
         result.alreadyDispatched ? "该单已派过，本次未重复下单" : "🥳 派单成功",
       );
 
-      // 局部更新这一项，不要整体刷新列表
-      final controller = logic.awaitingPreparationMealDeliveryOrderController;
-      controller.awaitingPreparationMealDeliveryOrders[index] =
-          mealDeliveryOrder.copyWith(status: result.status);
-      // 派单后状态变为 awaiting_delivery，已不属于「待制作」，手动-1
-      // 幂等返回时不减：那种情况下这单本来就不该在待制作列表里（是本地数据陈旧）
-      if (!result.alreadyDispatched) {
-        controller.count.value -= 1;
-      }
+      // 局部更新这一项，不要整体刷新列表。
+      //
+      // 走控制器的按 id 更新，而不是像以前那样按下标直接赋值：
+      // 现在有 Realtime 订阅，这一条可能已经被推送先一步从「待制作」里移除了，
+      // 那时候按下标赋值要么越界崩溃、要么覆盖到别的单单。
+      // 按 id 找不到就什么都不做，天然幂等，也不会重复扣角标。
+      logic.awaitingPreparationMealDeliveryOrderController.applyDispatched(
+        mealDeliveryOrder.id,
+        result.status,
+      );
     });
   }
 }

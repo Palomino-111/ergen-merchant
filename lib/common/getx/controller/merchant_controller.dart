@@ -11,6 +11,7 @@ import '../../models/funds.dart';
 import '../../models/merchant.dart';
 import '../../utility/network.dart';
 import 'account_controller.dart';
+import 'meal_delivery_order_controller/realtime_controller.dart';
 
 class MerchantController extends GetxController {
   static MerchantController get to => Get.find();
@@ -28,6 +29,8 @@ class MerchantController extends GetxController {
     if (AccountController.to.user.value == null) {
       // 退出登录或者其它导致用户账号无法使用的情况，需要清除商家信息
       clear();
+      // 实时订阅也必须断掉，否则会继续用上一个账号的身份收推送
+      MealDeliveryOrderRealtimeController.to.stop();
     } else {
       if (authState.event == AuthChangeEvent.signedIn) {
         // 登录时需要强制从服务器获取最新的商家信息
@@ -44,6 +47,14 @@ class MerchantController extends GetxController {
             await fetchMerchant();
           }
         }
+      }
+      // 商家信息就绪之后才能订阅——服务端的过滤条件就是 merchant_id。
+      // 放在这里而不是登录页，是为了把「冷启动时商家信息来自缓存」这条路径
+      // 也覆盖上：那种情况不会触发 signedIn，但同样需要订阅。
+      // start 对同一个 merchantId 是幂等的，不会重复建连。
+      final String? merchantId = merchant.value?.id;
+      if (merchantId != null) {
+        MealDeliveryOrderRealtimeController.to.start(merchantId);
       }
     }
   }

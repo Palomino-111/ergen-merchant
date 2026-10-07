@@ -4,6 +4,7 @@ import '../../../data/repository/meal_delivery_order_repository.dart';
 import '../../../exception/showable_exception.dart';
 import '../../../models/meal_delivery_order.dart';
 import '../../../env.dart';
+import 'realtime_utility.dart';
 
 /**
  * 全部餐配送订单
@@ -63,5 +64,32 @@ class AllMealDeliveryOrderController extends GetxController {
       print("fetchAllMealDeliveryOrders, fail, $e");
       throw ShowableException('获取订单失败，未知错误！');
     }
+  }
+
+  /**
+   * 用一条数据库行更新列表里对应的那一单（局部更新，绝不整表刷新）
+   *
+   * 数据来源有两条，拿到的都是 `meal_delivery_order` 的表行：
+   * - Realtime 推送的 newRecord（服务端一改状态，界面立刻跟着变）
+   * - 回到前台时按 id 批量重查的结果
+   *
+   * 找不到就什么都不做：订阅收到的是**全店**的变更，商家当前没加载到的单
+   * （不在已翻到的页里）不该凭空插进列表尾部，那会把分页顺序搞乱。
+   */
+  void applyRealtimeUpdate(Map<String, dynamic> row) {
+    final String? id = row['id'] as String?;
+    if (id == null) {
+      return;
+    }
+    final int index = allMealDeliveryOrders.indexWhere(
+      (order) => order.id == id,
+    );
+    if (index < 0) {
+      return;
+    }
+    allMealDeliveryOrders[index] = mergeDeliveryOrderRow(
+      allMealDeliveryOrders[index],
+      row,
+    );
   }
 }

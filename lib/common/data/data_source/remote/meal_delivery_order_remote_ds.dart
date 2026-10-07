@@ -50,9 +50,26 @@ abstract class MealDeliveryOrderRemoteDS {
     List<String> recipeOrderIds, {
     required String merchantId,
   });
+
+  /// 按 id 批量查我店里的配送单，**只要标量字段**（不带 meal/dish_sku 嵌套）。
+  ///
+  /// 用途：App 从后台回到前台时，把内存里已有订单的状态刷新一遍。
+  /// 和分页列表 [fetchListByMerchant] 的关键区别是它**不是整表重拉**——
+  /// 列表内容、顺序、滚动位置都不变，只把每条的状态换成最新的，
+  /// 所以商家不会遇到「切个后台回来列表跳回顶部」。
+  Future<List<MealDeliveryOrder>> fetchByIds(
+    List<String> ids, {
+    required String merchantId,
+  });
 }
 
 class MealDeliveryOrderRemoteDSImpl implements MealDeliveryOrderRemoteDS {
+  /// [fetchByIds] 一次 in 查询最多带多少个 id。
+  ///
+  /// PostgREST 走 GET，id 全在 query string 里；一个 uuid 36 个字符，
+  /// 几百个就接近常见网关/代理的 URL 长度上限了，所以分批发。
+  static const int _idBatchSize = 100;
+
   @override
   Future<List<MealDeliveryOrder>> fetchListByMerchant({
     required String merchantId,
@@ -162,6 +179,50 @@ class MealDeliveryOrderRemoteDSImpl implements MealDeliveryOrderRemoteDS {
       throw ShowableException(networkErrorMessage(e));
     } catch (e, st) {
       print("fetchByRecipeOrderIds, fail, $e, $st");
+      throw ShowableException('获取配送订单失败，未知错误！');
+    }
+  }
+
+  @override
+  Future<List<MealDeliveryOrder>> fetchByIds(
+    List<String> ids, {
+    required String merchantId,
+  }) async {
+    // 去重 + 去掉空 id，避免拼出无意义的 in 查询
+    final List<String> uniqueIds = ids
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (uniqueIds.isEmpty) {
+      return <MealDeliveryOrder>[];
+    }
+    try {
+      final List<MealDeliveryOrder> orders = <MealDeliveryOrder>[];
+      for (int start = 0; start < uniqueIds.length; start += _idBatchSize) {
+        final int end = start + _idBatchSize;
+        final List<String> batch = uniqueIds.sublist(
+          start,
+          end > uniqueIds.length ? uniqueIds.length : end,
+        );
+        final response = await withNetworkTimeout(
+          supabase
+              .from('meal_delivery_order')
+              // 这里刻意不带嵌套：调用方只需要拿状态去更新已有对象，
+              // 嵌套字段由本地那份保留（见 mergeDeliveryOrderRow）
+              .select('*')
+              // merchant_id 条件不能省：id 是调用方传进来的，
+              // 归属过滤是这一层自己的责任，不能只指望 RLS 兜底
+              .eq('merchant_id', merchantId)
+              .inFilter('id', batch),
+        );
+        orders.addAll(MealDeliveryOrderMapper.parseList(response));
+      }
+      return orders;
+    } on TimeoutException catch (e) {
+      print("fetchByIds, timeout, $e");
+      throw ShowableException(networkErrorMessage(e));
+    } catch (e, st) {
+      print("fetchByIds, fail, $e, $st");
       throw ShowableException('获取配送订单失败，未知错误！');
     }
   }

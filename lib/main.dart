@@ -16,6 +16,7 @@ import 'common/easy_refresh/utility.dart';
 import 'common/env.dart';
 import 'common/getx/controller/account_controller.dart';
 import 'common/getx/controller/meal_delivery_order_controller/all_meal_delivery_order_controller.dart';
+import 'common/getx/controller/meal_delivery_order_controller/realtime_controller.dart';
 import 'common/getx/controller/merchant_controller.dart';
 import 'common/hive_names.dart';
 import 'common/theme/app_theme.dart';
@@ -78,6 +79,10 @@ void initGetX() {
   Get.put(TransactionController());
   Get.put(AllMealDeliveryOrderController());
   Get.put(AwaitingPreparationMealDeliveryOrderController());
+  // 配送单状态实时同步。必须用 put（不能 lazyPut）：它要在 onInit 里注册
+  // App 前后台监听，被延迟创建的话回前台补数据就不会触发。
+  // 真正开始订阅要等拿到 merchantId，见 MerchantController.onAuthStateChange。
+  Get.put(MealDeliveryOrderRealtimeController());
   // Get.put(AddressController());
   // Get.put(RecipeController());
   // Get.put(AllRecipeOrderController());

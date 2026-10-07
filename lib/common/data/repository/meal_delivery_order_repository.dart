@@ -41,6 +41,15 @@ abstract class MealDeliveryOrderRepository {
     required String merchantId,
   });
 
+  /// 按 id 批量查配送单（不带缓存、不带嵌套），只用于把已有订单的状态刷新一遍。
+  ///
+  /// 和 [fetchByMerchant] 一样刻意不走缓存：它的唯一目的就是「拿到最新状态」，
+  /// 走缓存等于什么都没刷。
+  Future<List<MealDeliveryOrder>> fetchByIds(
+    List<String> ids, {
+    required String merchantId,
+  });
+
   /// 清空全部配送单缓存
   void clearCache();
 
@@ -144,6 +153,14 @@ class MealDeliveryOrderRepositoryImpl implements MealDeliveryOrderRepository {
     }
     result.addAll(byOrder);
     return result;
+  }
+
+  @override
+  Future<List<MealDeliveryOrder>> fetchByIds(
+    List<String> ids, {
+    required String merchantId,
+  }) {
+    return _remote.fetchByIds(ids, merchantId: merchantId);
   }
 
   @override
