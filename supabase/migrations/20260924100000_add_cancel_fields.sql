@@ -38,4 +38,4 @@ alter table public.meal_delivery_order
 comment on column public.meal_delivery_order.cancel_fee is
   '[通用] 第三方返回的取消费用，即我方为取消实际支付的罚金，单位元。与 provider_fee 并存，不可互相覆盖。';
 comment on column public.meal_delivery_order.cancel_reason is
-  '[通用] 取消原因 key（如 other / user_cancelled），由取消函数写入。存映射前的 key，不存快递100 的数字码，换服务商后仍可读。';
+  '[通用] 取消原因 key，闭集见 cancel-delivery-order 的 CANCEL_REASON_MAP（no_longer_needed / wrong_order_info / courier_requested / goods_unavailable / duplicate / courier_no_show / no_courier / other）。存映射前的 key，不存快递100 的数字码，换服务商后仍可读。';
