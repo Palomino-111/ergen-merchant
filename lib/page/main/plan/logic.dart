@@ -1,9 +1,9 @@
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 import 'package:zheergen_merchant_end/common/data/repository/meal_repository.dart';
-import 'package:zheergen_merchant_end/common/getx/controller/meal_delivery_order_controller/awaiting_preparation_meal_delivery_order_controller.dart';
+import 'package:zheergen_merchant_end/common/getx/controller/meal_delivery_order_controller/meal_delivery_order_list_controller.dart';
+
 import '../../../common/exception/showable_exception.dart';
-import '../../../common/getx/controller/meal_delivery_order_controller/all_meal_delivery_order_controller.dart';
 import '../../../common/getx/controller/meal_delivery_order_controller/utility.dart';
 import '../../../common/models/dispatch_result.dart';
 import '../../../common/models/meal_delivery_order.dart';
@@ -11,9 +11,14 @@ import '../../../common/utility/toast.dart';
 import 'state.dart';
 
 class PlanLogic extends GetxController {
-  final awaitingPreparationMealDeliveryOrderController =
-      AwaitingPreparationMealDeliveryOrderController.to;
-  final allMealDeliveryOrderController = AllMealDeliveryOrderController.to;
+  /// 三个分组列表控制器，**顺序即 tab 顺序**（见 mealDeliveryOrderListControllers）
+  final List<MealDeliveryOrderListController> orderControllers =
+      mealDeliveryOrderListControllers();
+
+  /// 待制作分组：唯一会因「派单」把单子移出列表的分组
+  MealDeliveryOrderListController get toPrepareController =>
+      ToPrepareMealDeliveryOrderController.to;
+
   final MealRepository mealRepository = Get.find();
 
   final PlanState state = PlanState();
@@ -21,24 +26,6 @@ class PlanLogic extends GetxController {
   @override
   void onInit() {
     super.onInit();
-  }
-
-  @override
-  void onReady() async {
-    super.onReady();
-    // if (awaitingPreparationMealDeliveryOrderController
-    //     .awaitingPreparationMealDeliveryOrders.isEmpty) {
-    //   await state.awaitingPreparationEasyRefreshController.callRefresh(
-    //     overOffset: 150,
-    //     duration: Duration(milliseconds: 300),
-    //   );
-    // }
-    // if (allMealDeliveryOrderController.allMealDeliveryOrders.isEmpty) {
-    //   await state.allEasyRefreshController.callRefresh(
-    //     overOffset: 150,
-    //     duration: Duration(milliseconds: 300),
-    //   );
-    // }
   }
 
   /**

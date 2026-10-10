@@ -6,7 +6,7 @@ import 'package:fluwx/fluwx.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:zheergen_merchant_end/common/getx/controller/meal_delivery_order_controller/awaiting_preparation_meal_delivery_order_controller.dart';
+import 'package:zheergen_merchant_end/common/getx/controller/meal_delivery_order_controller/meal_delivery_order_list_controller.dart';
 import 'package:zheergen_merchant_end/common/getx/controller/transaction_controller.dart';
 import 'package:zheergen_merchant_end/page/main/view.dart';
 import 'package:zheergen_merchant_end/page/sign_agreement/view.dart';
@@ -15,7 +15,6 @@ import 'common/dependency_injection/binding.dart';
 import 'common/easy_refresh/utility.dart';
 import 'common/env.dart';
 import 'common/getx/controller/account_controller.dart';
-import 'common/getx/controller/meal_delivery_order_controller/all_meal_delivery_order_controller.dart';
 import 'common/getx/controller/meal_delivery_order_controller/realtime_controller.dart';
 import 'common/getx/controller/merchant_controller.dart';
 import 'common/hive_names.dart';
@@ -77,8 +76,12 @@ void initGetX() {
   Get.put(AccountController());
   Get.put(MerchantController());
   Get.put(TransactionController());
+  // 「订单」页的分组列表。顺序与 DeliveryStatusGroup 声明顺序一致（见
+  // mealDeliveryOrderListControllers）：待制作 / 在途 / 已结束，最后是兜底的「全部」。
+  Get.put(ToPrepareMealDeliveryOrderController());
+  Get.put(InTransitMealDeliveryOrderController());
+  Get.put(FinishedMealDeliveryOrderController());
   Get.put(AllMealDeliveryOrderController());
-  Get.put(AwaitingPreparationMealDeliveryOrderController());
   // 配送单状态实时同步。必须用 put（不能 lazyPut）：它要在 onInit 里注册
   // App 前后台监听，被延迟创建的话回前台补数据就不会触发。
   // 真正开始订阅要等拿到 merchantId，见 MerchantController.onAuthStateChange。

@@ -2,8 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:zheergen_merchant_end/common/data/mapper/meal_delivery_order_mapper.dart';
 import 'package:zheergen_merchant_end/common/data/repository/meal_delivery_order_repository.dart';
-import 'package:zheergen_merchant_end/common/getx/controller/meal_delivery_order_controller/awaiting_preparation_meal_delivery_order_controller.dart';
+import 'package:zheergen_merchant_end/common/getx/controller/meal_delivery_order_controller/meal_delivery_order_list_controller.dart';
 import 'package:zheergen_merchant_end/common/getx/controller/meal_delivery_order_controller/realtime_utility.dart';
+import 'package:zheergen_merchant_end/common/models/delivery_status.dart';
 import 'package:zheergen_merchant_end/common/models/meal_delivery_order.dart';
 
 /// 构造一条最小可解析的配送单表行。
@@ -107,16 +108,19 @@ class _UnusedRepository implements MealDeliveryOrderRepository {
   @override
   Future<List<MealDeliveryOrder>> fetchByMerchant({
     required String merchantId,
-    String? status,
+    List<String>? statuses,
     required int page,
     int pageSize = 20,
+    bool ascending = true,
+    DateTime? deliveryTimeFrom,
   }) =>
       throw UnimplementedError();
 
   @override
   Future<int> countByMerchant({
     required String merchantId,
-    String? status,
+    List<String>? statuses,
+    DateTime? deliveryTimeFrom,
   }) =>
       throw UnimplementedError();
 
@@ -205,107 +209,223 @@ void main() {
     });
   });
 
-  group('AwaitingPreparationMealDeliveryOrderController', () {
-    late AwaitingPreparationMealDeliveryOrderController controller;
+  group('MealDeliveryOrderListController', () {
+    late ToPrepareMealDeliveryOrderController toPrepare;
+    late InTransitMealDeliveryOrderController inTransit;
+    late FinishedMealDeliveryOrderController finished;
+    late AllMealDeliveryOrderController all;
 
     setUp(() {
       Get.testMode = true;
       Get.put<MealDeliveryOrderRepository>(_UnusedRepository());
-      controller = Get.put(AwaitingPreparationMealDeliveryOrderController());
+      toPrepare = Get.put(ToPrepareMealDeliveryOrderController());
+      inTransit = Get.put(InTransitMealDeliveryOrderController());
+      finished = Get.put(FinishedMealDeliveryOrderController());
+      all = Get.put(AllMealDeliveryOrderController());
     });
 
     tearDown(Get.reset);
 
-    /// 造出「待制作列表里有 n 条，角标也是 n」这个初始状态
-    void seed(List<String> ids) {
-      controller.awaitingPreparationMealDeliveryOrders.assignAll(
-        ids
-            .map((id) => _orderWithNested(
-                  id: id,
-                  status: AwaitingPreparationMealDeliveryOrderController
-                      .awaitingPreparationStatus,
-                ))
-            .toList(),
+    /// 造出「列表里有 n 条（状态属于本分组），角标也是 n」这个初始状态
+    void seed(MealDeliveryOrderListController controller, List<String> ids) {
+      // 「全部」分组的 statuses 是空的，随便给个真实状态即可
+      final String status = controller.group.statuses.isEmpty
+          ? DeliveryStatus.awaitingPreparation.key
+          : controller.group.statuses.first;
+      controller.orders.assignAll(
+        ids.map((id) => _orderWithNested(id: id, status: status)).toList(),
       );
       controller.count.value = ids.length;
     }
 
-    test('状态不再是待制作时立刻移除，并同步角标', () {
-      seed(<String>['a', 'b']);
+    test('带状态过滤的分组把 7 个状态全覆盖且互不重叠', () {
+      // 这条断言是防「订单凭空消失」的：一个状态如果没被任何分组覆盖，
+      // 那个状态的单在任何 tab 里都看不到；被两个分组覆盖则会重复出现。
+      // 「全部」组不做过滤（statuses 为空），不参与覆盖统计。
+      final Set<String> all_ = DeliveryStatus.values
+          .map((DeliveryStatus status) => status.key)
+          .toSet();
+      final List<DeliveryStatusGroup> filtered = DeliveryStatusGroup.values
+          .where((DeliveryStatusGroup group) => group.statuses.isNotEmpty)
+          .toList();
+      final List<String> covered = <String>[
+        for (final DeliveryStatusGroup group in filtered) ...group.statuses,
+      ];
 
-      controller.applyRealtimeUpdate(_row(id: 'a', status: 'delivering'));
+      expect(covered.toSet(), all_);
+      expect(
+        covered.length,
+        all_.length,
+        reason: '有状态被分到了多个分组',
+      );
+    });
+
+    test('「全部」组不过滤状态，且任何状态变化都不会把单子移出该列表', () {
+      expect(DeliveryStatusGroup.all.statuses, isEmpty);
+      for (final DeliveryStatus status in DeliveryStatus.values) {
+        expect(
+          DeliveryStatusGroup.all.containsStatus(status.key),
+          isTrue,
+          reason: '「全部」组必须收下所有状态，否则 Realtime 一推就会把单子删掉',
+        );
+      }
+      // 状态未知（脏数据 / 后端加了新枚举）时也不能删
+      expect(DeliveryStatusGroup.all.containsStatus('brand_new_status'), isTrue);
+
+      seed(all, <String>['a']);
+      all.applyRealtimeUpdate(_row(id: 'a', status: 'delivered'));
+
+      expect(all.orders.map((e) => e.id), <String>['a']);
+      expect(all.orders.single.status, 'delivered');
+    });
+
+    test('状态不再是待制作时立刻移除，并同步角标', () {
+      seed(toPrepare, <String>['a', 'b']);
+
+      toPrepare.applyRealtimeUpdate(_row(id: 'a', status: 'delivering'));
 
       expect(
-        controller.awaitingPreparationMealDeliveryOrders.map((e) => e.id),
+        toPrepare.orders.map((e) => e.id),
         <String>['b'],
       );
-      expect(controller.count.value, 1);
+      expect(toPrepare.count.value, 1);
     });
 
     test('同一条状态变化重复到达时，角标不会被重复扣减', () {
-      seed(<String>['a', 'b']);
+      seed(toPrepare, <String>['a', 'b']);
 
-      controller.applyRealtimeUpdate(_row(id: 'a', status: 'delivering'));
+      toPrepare.applyRealtimeUpdate(_row(id: 'a', status: 'delivering'));
       // Realtime 推送和「回前台重查」可能都送到同一条，必须幂等
-      controller.applyRealtimeUpdate(_row(id: 'a', status: 'delivering'));
+      toPrepare.applyRealtimeUpdate(_row(id: 'a', status: 'delivering'));
 
-      expect(controller.count.value, 1);
-      expect(controller.awaitingPreparationMealDeliveryOrders.length, 1);
+      expect(toPrepare.count.value, 1);
+      expect(toPrepare.orders.length, 1);
     });
 
     test('状态仍是待制作时原地更新，不移除也不动角标', () {
-      seed(<String>['a']);
+      seed(toPrepare, <String>['a']);
 
-      controller.applyRealtimeUpdate(
+      toPrepare.applyRealtimeUpdate(
         _row(id: 'a', status: 'awaiting_preparation', updatedAt: '2025-07-18T09:00:00+00:00'),
       );
 
-      expect(controller.awaitingPreparationMealDeliveryOrders.length, 1);
-      expect(controller.count.value, 1);
+      expect(toPrepare.orders.length, 1);
+      expect(toPrepare.count.value, 1);
       expect(
-        controller.awaitingPreparationMealDeliveryOrders.single.updatedAt,
+        toPrepare.orders.single.updatedAt,
         DateTime.parse('2025-07-18T09:00:00+00:00'),
       );
     });
 
     test('不在待制作列表里的单不会被插进来', () {
-      seed(<String>['a']);
+      seed(toPrepare, <String>['a']);
 
-      controller.applyRealtimeUpdate(
+      toPrepare.applyRealtimeUpdate(
         _row(id: '别的单', status: 'awaiting_preparation'),
       );
 
       expect(
-        controller.awaitingPreparationMealDeliveryOrders.map((e) => e.id),
+        toPrepare.orders.map((e) => e.id),
         <String>['a'],
       );
-      expect(controller.count.value, 1);
+      expect(toPrepare.count.value, 1);
     });
 
     test('派单的乐观更新与随后的 Realtime 推送共用一条路径，角标只扣一次', () {
-      seed(<String>['a', 'b']);
+      seed(toPrepare, <String>['a', 'b']);
 
       // 1. 派单成功，本地先改
-      controller.applyDispatched('a', 'awaiting_delivery');
-      expect(controller.count.value, 1);
+      toPrepare.applyDispatched('a', 'awaiting_delivery');
+      expect(toPrepare.count.value, 1);
 
       // 2. 服务端的 Realtime 事件随后到达同一条
-      controller.applyRealtimeUpdate(_row(id: 'a', status: 'awaiting_delivery'));
+      toPrepare.applyRealtimeUpdate(_row(id: 'a', status: 'awaiting_delivery'));
 
-      expect(controller.count.value, 1);
+      expect(toPrepare.count.value, 1);
       expect(
-        controller.awaitingPreparationMealDeliveryOrders.map((e) => e.id),
+        toPrepare.orders.map((e) => e.id),
         <String>['b'],
       );
     });
 
     test('id 为空的行直接忽略', () {
-      seed(<String>['a']);
+      seed(toPrepare, <String>['a']);
 
-      controller.applyRealtimeUpdate(<String, dynamic>{'status': 'delivering'});
+      toPrepare.applyRealtimeUpdate(<String, dynamic>{'status': 'delivering'});
 
-      expect(controller.awaitingPreparationMealDeliveryOrders.length, 1);
-      expect(controller.count.value, 1);
+      expect(toPrepare.orders.length, 1);
+      expect(toPrepare.count.value, 1);
+    });
+
+    test('在途分组：组内换状态（待配送→配送中）原地更新，不移除也不动角标', () {
+      seed(inTransit, <String>['a']);
+
+      inTransit.applyRealtimeUpdate(_row(id: 'a', status: 'delivering'));
+
+      expect(inTransit.orders.map((e) => e.id), <String>['a']);
+      expect(inTransit.orders.single.status, 'delivering');
+      expect(inTransit.count.value, 1);
+    });
+
+    test('已结束分组：状态离开本组时移除，但不带角标的分组不去动 count', () {
+      seed(finished, <String>['a']);
+
+      finished.applyRealtimeUpdate(
+        _row(id: 'a', status: 'awaiting_preparation'),
+      );
+
+      expect(finished.orders, isEmpty);
+      // 该分组的 countBadge 为 false，从不查也不该改 count（这里预置的 1 必须留着）
+      expect(
+        finished.count.value,
+        1,
+        reason: 'countBadge=false 的分组不该扣角标',
+      );
+    });
+
+    test('分组配置：只有待制作要角标，只有已结束/全部要在 item 上展示状态', () {
+      expect(DeliveryStatusGroup.toPrepare.countBadge, isTrue);
+      expect(DeliveryStatusGroup.inTransit.countBadge, isFalse);
+      expect(DeliveryStatusGroup.finished.countBadge, isFalse);
+      expect(DeliveryStatusGroup.all.countBadge, isFalse);
+
+      expect(DeliveryStatusGroup.toPrepare.showItemStatus, isFalse);
+      expect(DeliveryStatusGroup.inTransit.showItemStatus, isFalse);
+      // 这两组里混着多种状态，必须展示才分得清
+      expect(DeliveryStatusGroup.finished.showItemStatus, isTrue);
+      expect(DeliveryStatusGroup.all.showItemStatus, isTrue);
+
+      // 未结束的组必须升序，否则「最远未来的单」会排在最前面
+      expect(DeliveryStatusGroup.toPrepare.ascending, isTrue);
+      expect(DeliveryStatusGroup.inTransit.ascending, isTrue);
+      expect(DeliveryStatusGroup.finished.ascending, isFalse);
+      // 「全部」保持改造前的行为：按时间倒序
+      expect(DeliveryStatusGroup.all.ascending, isFalse);
+
+      // tab 顺序 = 声明顺序，「全部」必须在最后
+      expect(DeliveryStatusGroup.values.last, DeliveryStatusGroup.all);
+    });
+
+    test('未结束的组只看「今天及以后」，已结束/全部不限（否则历史单要能翻）', () {
+      expect(DeliveryStatusGroup.toPrepare.fromTodayOnly, isTrue);
+      expect(DeliveryStatusGroup.inTransit.fromTodayOnly, isTrue);
+      expect(DeliveryStatusGroup.finished.fromTodayOnly, isFalse);
+      expect(DeliveryStatusGroup.all.fromTodayOnly, isFalse);
+
+      // 下界是手机本地时间的当天 00:00：
+      // 直接用 UTC 切天会让国内商家在早上 8 点前把"今天"看成昨天
+      final DateTime? from = DeliveryStatusGroup.toPrepare.deliveryTimeFrom;
+      final DateTime now = DateTime.now();
+      expect(from, isNotNull);
+      expect(from!.isUtc, isFalse, reason: '数据层负责转 UTC，分组只给本地时间');
+      expect(from.year, now.year);
+      expect(from.month, now.month);
+      expect(from.day, now.day);
+      expect(from.hour, 0);
+      expect(from.minute, 0);
+
+      expect(DeliveryStatusGroup.finished.deliveryTimeFrom, isNull);
+      expect(DeliveryStatusGroup.all.deliveryTimeFrom, isNull);
     });
   });
 }

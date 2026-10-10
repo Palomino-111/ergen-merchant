@@ -7,8 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../main.dart';
 import '../../../data/repository/meal_delivery_order_repository.dart';
 import '../../../models/meal_delivery_order.dart';
-import 'all_meal_delivery_order_controller.dart';
-import 'awaiting_preparation_meal_delivery_order_controller.dart';
+import 'meal_delivery_order_list_controller.dart';
 
 /// 配送单状态的实时同步。
 ///
@@ -18,8 +17,9 @@ import 'awaiting_preparation_meal_delivery_order_controller.dart';
 /// 不刷就一直停在「待配送」，等于商家根本不知道餐什么时候被取走、送到了没有。
 ///
 /// **怎么做**：订阅 `meal_delivery_order` 的 UPDATE，按 `merchant_id` 做服务端
-/// 过滤（只收自己店的单），收到之后交给两个列表控制器做**局部更新**，
-/// 不触发任何整表刷新，所以列表不会闪、不会跳。
+/// 过滤（只收自己店的单），收到之后交给**每个分组列表控制器**做**局部更新**
+/// （见 [mealDeliveryOrderListControllers]），不触发任何整表刷新，
+/// 所以列表不会闪、不会跳。
 ///
 /// **服务端前置条件**（缺一个都会「静默失效」——不报错，只是永远收不到）：
 /// 1. 表必须加进 Realtime publication：
@@ -36,6 +36,11 @@ import 'awaiting_preparation_meal_delivery_order_controller.dart';
 /// **没做的事**：只订阅 UPDATE。新订单到来（INSERT）不会自己出现在列表里，
 /// 还需要商家下拉刷新——那是另一个需求，要加的话在这里补一个 INSERT 订阅、
 /// 并让列表控制器决定插到哪个位置（涉及分页顺序，不是无脑 insert 就完事）。
+///
+/// 同理，UPDATE 推送**只让订单从一个分组里消失，不会让它出现在另一个分组里**：
+/// 商家在「待制作」派单后切到「在途」，那条单要下拉刷新才会出现。
+/// 原因和上面一样是分页顺序；要自动跨分组出现，得改成各 tab 共享一份
+/// 内存数据 + 视图过滤，那是另一个改动（见列表控制器的 applyRealtimeUpdate）。
 class MealDeliveryOrderRealtimeController extends GetxController
     with WidgetsBindingObserver {
   static MealDeliveryOrderRealtimeController get to => Get.find();
@@ -146,13 +151,18 @@ class MealDeliveryOrderRealtimeController extends GetxController
     }
   }
 
-  /// 把一行配送单数据同步到两个列表里对应的那一单
+  /// 把一行配送单数据同步到每个分组列表里对应的那一单
+  ///
+  /// 必须全部通知到：一个状态变化（例如派单）会让这条单从它原来所在的分组
+  /// 消失（新状态不属于那个分组了），所以「通知谁」不能只挑当前可见的 tab。
   void _applyRow(Map<String, dynamic> row) {
     if (row.isEmpty) {
       return;
     }
-    AllMealDeliveryOrderController.to.applyRealtimeUpdate(row);
-    AwaitingPreparationMealDeliveryOrderController.to.applyRealtimeUpdate(row);
+    for (final MealDeliveryOrderListController controller
+        in mealDeliveryOrderListControllers()) {
+      controller.applyRealtimeUpdate(row);
+    }
   }
 
   /// 回到前台时补一次数据。
@@ -169,15 +179,15 @@ class MealDeliveryOrderRealtimeController extends GetxController
 
     // 断线重连不在这里管：RealtimeClient 自己有心跳和自动重连，
     // 通道会在连接恢复后自动重新 join。这里只负责把「挂起期间漏掉的数据」补上。
-    final List<String> ids = <String>[
-      ...AllMealDeliveryOrderController.to.allMealDeliveryOrders
-          .map((MealDeliveryOrder order) => order.id)
-          .whereType<String>(),
-      ...AwaitingPreparationMealDeliveryOrderController
-          .to.awaitingPreparationMealDeliveryOrders
-          .map((MealDeliveryOrder order) => order.id)
-          .whereType<String>(),
-    ];
+    final Set<String> ids = <String>{};
+    for (final MealDeliveryOrderListController controller
+        in mealDeliveryOrderListControllers()) {
+      ids.addAll(
+        controller.orders
+            .map((MealDeliveryOrder order) => order.id)
+            .whereType<String>(),
+      );
+    }
     if (ids.isEmpty) {
       return;
     }
@@ -185,7 +195,7 @@ class MealDeliveryOrderRealtimeController extends GetxController
     try {
       final List<MealDeliveryOrder> orders =
           await Get.find<MealDeliveryOrderRepository>().fetchByIds(
-        ids,
+        ids.toList(growable: false),
         merchantId: merchantId,
       );
       for (final MealDeliveryOrder order in orders) {

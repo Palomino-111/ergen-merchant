@@ -15,18 +15,26 @@ import '../data_source/remote/meal_delivery_order_remote_ds.dart';
 abstract class MealDeliveryOrderRepository {
   /// 分页查询我店里的配送单（含 meal / dish_sku 嵌套，一次查询拿全）
   ///
-  /// [status] 为 null 表示不过滤状态（全部）。
+  /// [statuses] 是状态集合（商家端一个分组 tab 对应一个集合），
+  /// null 或空表示不过滤状态。[ascending] 为组内排序方向。
+  /// [deliveryTimeFrom] 是送达时间下界（本地「今天 00:00」），
+  /// 见 `DeliveryStatusGroup.fromTodayOnly`。
   Future<List<MealDeliveryOrder>> fetchByMerchant({
     required String merchantId,
-    String? status,
+    List<String>? statuses,
     required int page,
     int pageSize = 20,
+    bool ascending = true,
+    DateTime? deliveryTimeFrom,
   });
 
-  /// 我店里的配送单总数（[status] 为 null 表示不过滤状态）
+  /// 我店里的配送单总数（[statuses] 为 null 或空表示不过滤状态）
+  ///
+  /// [deliveryTimeFrom] 必须和列表用同一个值，否则角标和列表对不上。
   Future<int> countByMerchant({
     required String merchantId,
-    String? status,
+    List<String>? statuses,
+    DateTime? deliveryTimeFrom,
   });
 
   /// 查某个食谱订单下我店里的配送单（带缓存）
@@ -73,26 +81,32 @@ class MealDeliveryOrderRepositoryImpl implements MealDeliveryOrderRepository {
   @override
   Future<List<MealDeliveryOrder>> fetchByMerchant({
     required String merchantId,
-    String? status,
+    List<String>? statuses,
     required int page,
     int pageSize = 20,
+    bool ascending = true,
+    DateTime? deliveryTimeFrom,
   }) {
     return _remote.fetchListByMerchant(
       merchantId: merchantId,
-      status: status,
+      statuses: statuses,
       page: page,
       pageSize: pageSize,
+      ascending: ascending,
+      deliveryTimeFrom: deliveryTimeFrom,
     );
   }
 
   @override
   Future<int> countByMerchant({
     required String merchantId,
-    String? status,
+    List<String>? statuses,
+    DateTime? deliveryTimeFrom,
   }) {
     return _remote.countByMerchant(
       merchantId: merchantId,
-      status: status,
+      statuses: statuses,
+      deliveryTimeFrom: deliveryTimeFrom,
     );
   }
 
