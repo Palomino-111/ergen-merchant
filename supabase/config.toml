@@ -11,8 +11,15 @@ project_id = "wmioylfpdbdwnbybkpju"
 verify_jwt = true
 
 [functions.cancel-delivery-order]
-# 由商家端调用（订单需要取消配送时）。与 dispatch-delivery-order 同一套鉴权：
-# 转发用户 JWT 走 RLS，并显式校验 merchant.user_id === auth.uid()。
+# 由**商家端与用户端**共同调用（商家取消配送 / 用户取消自己这一单）。鉴权两步：
+#   1. 用 Authorization 头的 JWT 调 auth.getUser() 拿身份（不接受客户端自报 user id）；
+#   2. 显式校验调用者是 merchant.user_id（商家老板）或 recipe_order.user_id（下单用户）。
+#
+# ⚠️ 本函数用 **SUPABASE_SERVICE_ROLE_KEY** 连库，即**绕过 RLS**（与其它函数不同）：
+#    RLS 的 UPDATE 策略只允许商家更新配送单，顾客的取消会被静默过滤成「更新 0 行」，
+#    而 PostgREST 对 0 行不报错（204 + error: null）—— 函数会返回「取消成功」而库里没写。
+#    因此归属校验是唯一防线，必须留在函数内；落库还必须 .select('id') 校验受影响行数。
+#    service_role 由 Supabase 自动注入（delivery-order-callback 也用它），无需手工配置。
 #
 # ⚠️ 取消**可能产生费用**（快递100 文档第 3 节），返回的 cancelFee 落 cancel_fee 列。
 # 远端 method=cancel。注意：**仓库源码里硬编码的是测试网关**
@@ -33,6 +40,20 @@ verify_jwt = true
 # ⚠️ 该接口在快递100 侧**计费**（文档 6.6 的 30004 处理方式写着「账号无可用余额，需要充值」），
 # 因此函数不做任何轮询/重试，也刻意没做成客户端可直连的读接口。
 # 远端 method=queryCourier。地址同 cancel-delivery-order：源码里是测试网关。
+verify_jwt = true
+
+[functions.get-delivery-price]
+# 由商家端调用（发单前看「叫骑手要花多少钱」）。与 dispatch-delivery-order 同一套鉴权：
+# 转发用户 JWT 走 RLS，并显式校验 merchant.user_id === auth.uid()。
+#
+# 远端 method=price，地址同 cancel-delivery-order：源码里硬编码的是测试网关。
+# 按文档（一、同城急送价格查询接口）该接口**并非真正发单**（是否计费本节未单列，
+# 只有批量查价那节明说不计费；首次联调核对一次余额即可确认），
+# 但它是一次真实上游调用，且只代表「此刻」的报价。
+#
+# ⚠️ 询价参数必须与 dispatch-delivery-order 逐字一致（运力 dadatongcheng、weight=1、
+#    price=total_paid、orderType=0），否则报出的价与真实扣费对不上。
+#    两处常量是复制关系，改动必须同步。
 verify_jwt = true
 
 [functions.delivery-order-callback]
