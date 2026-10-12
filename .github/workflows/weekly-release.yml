@@ -1,0 +1,340 @@
+# 折耳根商家端 App —— 每周五 08:30 自动打包 → 阿里云 OSS → 飞书群通知
+#
+# 与消费端 ergen-mobile-flutter 的 .github/workflows/weekly-release.yml 同一套机制，
+# 差异只有「配置」和「构建命令」，逐条列在下面。运维文档见 documents/release/weekly-release.md
+#
+# ── 与消费端的差异（只有 4 处）───────────────────────────────────────────────
+# 1) OSS：沿用商家端已有的 bucket hk-ergen（香港）+ 已绑定并配好证书的自定义域名
+#    dl.guying.xyz，所以寻址必须用 cname，链接域名就是它。
+#    绝不能用默认地域节点 hk-ergen.oss-cn-hongkong.aliyuncs.com —— 阿里云禁止经默认
+#    公网域名分发 .apk / .ipa，下载会 400 ApkDownloadForbidden（这个限制**只管下载不管上传**，
+#    ossutil cp 会一路成功，链接一点才报错，很有迷惑性）。
+# 2) 本仓库没有 .fvmrc，Flutter 版本在下面 FLUTTER_VERSION 里硬编码（与本地一致）。
+# 3) 本仓库没有 Shiply / Sentry / dart-define，构建命令保持朴素。
+# 4) release keystore 已在仓库里（android/app/zheergenMerchantEndKeystore），CI 无需注入凭证。
+#
+# ── 版本号 ───────────────────────────────────────────────────────────────────
+# versionName = 0.0.<YYMMDD>，versionCode = <YYMMDD>，都由构建日期（北京时间）派生。
+# 不回写仓库、不打 tag、CI 只有只读权限。versionCode 单调递增，覆盖安装不会
+# INSTALL_FAILED_VERSION_DOWNGRADE。
+#
+# ⚠️ 定时任务只会在仓库【默认分支】上触发（GitHub 官方限制）。本仓库默认分支是 main，
+#    而实际发布分支是 develop_mvp，二者必须收敛，见运维文档 §4.1。
+#
+# ── 配置（Settings → Secrets and variables → Actions）──────────────────────
+# Variables : OSS_BUCKET / OSS_ENDPOINT / OSS_REGION
+#             （可选 OSS_PREFIX 默认 ergen-merchant、OSS_ADDRESSING_STYLE 默认 cname）
+# Secrets   : OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET / FEISHU_WEBHOOK_URL
+#             可选 FEISHU_BOT_SECRET（机器人开了「签名校验」时必填）
+# 排错与一次性配置步骤见 documents/release/weekly-release.md
+
+name: Android Weekly Release
+
+on:
+  schedule:
+    # 每周五 08:30（北京时间）。timezone 是官方字段，别用 UTC 手算。
+    - cron: '30 8 * * 5'
+      timezone: 'Asia/Shanghai'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只构建，不上传 OSS、不通知飞书（默认勾选；确认真要发布时请取消勾选）
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: merchant-weekly-release
+  cancel-in-progress: false
+
+env:
+  # 【必须】已绑定自定义域名的 bucket。商家端用 dl.guying.xyz（见文件头说明）。
+  OSS_BUCKET: ${{ vars.OSS_BUCKET }}
+  OSS_ENDPOINT: ${{ vars.OSS_ENDPOINT }}          # 自定义域名，不带协议，如 dl.guying.xyz
+  OSS_REGION: ${{ vars.OSS_REGION }}              # 如 cn-hongkong。ossutil 2.x 的 V4 签名必填
+  OSS_PREFIX: ${{ vars.OSS_PREFIX || 'ergen-merchant' }}
+  OSS_ADDRESSING_STYLE: ${{ vars.OSS_ADDRESSING_STYLE || 'cname' }}
+
+  FLUTTER_VERSION: '3.27.4'
+  NDK_VERSION: 26.1.10909125                      # = Flutter 3.27.4 的 flutter.ndkVersion
+  COMPILE_SDK: 35                                 # = Flutter 3.27.4 的 flutter.compileSdkVersion
+  BUILD_TOOLS: 35.0.0
+  APK: build/app/outputs/flutter-apk/app-release.apk
+
+  # 手动触发默认只构建；定时任务恒为正式发布。
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # ---------------------------------------------------------------------
+      # 配置自检：宁可在 5 秒内报错，也别等构建 30 分钟才发现少个变量。
+      # 逐条显式检查而不是循环 —— 这样能直接标出每一项属于 Variables 还是 Secrets。
+      # 这两个是**不同的存储**，vars.X 读不到 Secrets 里的同名项。
+      # ---------------------------------------------------------------------
+      - name: 配置自检
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${OSS_BUCKET:-}" ]]            || missing+=("Variable OSS_BUCKET")
+          [[ -n "${OSS_ENDPOINT:-}" ]]          || missing+=("Variable OSS_ENDPOINT")
+          [[ -n "${OSS_REGION:-}" ]]            || missing+=("Variable OSS_REGION")
+          [[ -n "${OSS_ACCESS_KEY_ID:-}" ]]     || missing+=("Secret   OSS_ACCESS_KEY_ID")
+          [[ -n "${OSS_ACCESS_KEY_SECRET:-}" ]] || missing+=("Secret   OSS_ACCESS_KEY_SECRET")
+          [[ -n "${FEISHU_WEBHOOK_URL:-}" ]]    || missing+=("Secret   FEISHU_WEBHOOK_URL")
+
+          if (( ${#missing[@]} > 0 )); then
+            # 只构建模式（手动触发默认）不需要发布配置：降级为警告，不拦构建。
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+              printf '::warning::dry_run 只构建模式：以下发布配置缺失，本次不上传、不通知 —— %s\n' "${missing[*]}"
+              exit 0
+            fi
+            printf '::error::缺少配置：%s\n' "${missing[*]}"
+            echo "配置在 Settings → Secrets and variables → Actions，Variables 与 Secrets 是两个不同的 tab。"
+            echo "清单见 documents/release/weekly-release.md §4"
+            exit 1
+          fi
+
+          echo "配置自检通过："
+          echo "  OSS     oss://${OSS_BUCKET}/${OSS_PREFIX}  @  ${OSS_ENDPOINT}  (${OSS_REGION}, ${OSS_ADDRESSING_STYLE})"
+          echo "  飞书    webhook 已配置"
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # v3 会去装 Android SDK 里已经被移除的旧 `tools` 包，直接报
+      # "Failed to find package 'tools'" 然后挂掉，必须 >= v4。
+      - uses: android-actions/setup-android@v4
+
+      # NDK 要装：`ndkVersion = flutter.ndkVersion` 指向 26.1.10909125，
+      # release 构建剥离 .so 符号时 AGP 会去找它。
+      - name: 安装 platform / build-tools / NDK
+        run: sdkmanager --install "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS}" "ndk;${NDK_VERSION}" >/dev/null
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # 阿里云没有官方 OSS 上传 Action，社区那几个还停在 ossutil 1.x（参数与 2.x 不兼容），
+      # 所以直接下官方二进制并校验 SHA256。注意 1.x/2.x flag 不同：
+      # 2.x 是 --content-type / --content-disposition / --cache-control，没有 --meta / --jobs。
+      - name: 安装 ossutil
+        env:
+          OSSUTIL_VERSION: 2.4.0
+          OSSUTIL_SHA256: 85edf66b2fb7238f5c7e25cab820cf29312319fe4935b7c86a6b8485eb434f3c
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/ossutil.zip \
+            "https://gosspublic.alicdn.com/ossutil/v2/${OSSUTIL_VERSION}/ossutil-${OSSUTIL_VERSION}-linux-amd64.zip"
+          echo "${OSSUTIL_SHA256}  /tmp/ossutil.zip" | sha256sum -c -
+          unzip -q /tmp/ossutil.zip -d /tmp/ossutil
+          sudo install -m 0755 "$(find /tmp/ossutil -type f -name ossutil | head -n1)" /usr/local/bin/ossutil
+          ossutil version
+
+      # ---------------------------------------------------------------------
+      # 版本号 = 构建日期，每周必然变化且单调递增，不需要人工提版本。
+      # ---------------------------------------------------------------------
+      - name: 计算版本号
+        id: ver
+        run: |
+          set -euo pipefail
+          CODE="$(TZ=Asia/Shanghai date +%Y%m%d)"
+          echo "version=0.0.${CODE:2}" >> "$GITHUB_OUTPUT"   # 0.0.260918
+          echo "code=${CODE}" >> "$GITHUB_OUTPUT"           # 20260918
+
+      - run: flutter pub get
+
+      - name: 构建 release APK
+        run: |
+          set -euo pipefail
+          # universal APK（不开 --split-per-abi）：一个链接覆盖所有机型；
+          # 而且 --split-per-abi 会把 versionCode 乘以 ABI 系数，破坏版本可比性。
+          flutter build apk --release \
+            --build-name="${{ steps.ver.outputs.version }}" \
+            --build-number="${{ steps.ver.outputs.code }}"
+
+      # ---------------------------------------------------------------------
+      # 上传：两个对象都是**私有**的，发出去的是一条 7 天有效的签名链接。
+      #
+      # 为什么不用公共读 + 固定链接：封闭测试阶段不能让 APK 被匿名扫到/下载。
+      # 公共读意味着任何拿到 URL 的人都能下，而且无法撤销。签名链接的代价是
+      # 有效期最长 7 天（V4 签名的硬上限），所以「以群里最新一条消息为准」。
+      # ---------------------------------------------------------------------
+      - name: 上传到 OSS
+        if: env.DRY_RUN != 'true'
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          : "${OSS_BUCKET:?缺少 Variable OSS_BUCKET}"
+          : "${OSS_ENDPOINT:?缺少 Variable OSS_ENDPOINT}"
+          : "${OSS_REGION:?缺少 Variable OSS_REGION}"
+          : "${OSS_ACCESS_KEY_ID:?缺少 Secret OSS_ACCESS_KEY_ID}"
+          : "${OSS_ACCESS_KEY_SECRET:?缺少 Secret OSS_ACCESS_KEY_SECRET}"
+
+          VER="${{ steps.ver.outputs.version }}"
+          ARCHIVE_KEY="oss://${OSS_BUCKET}/${OSS_PREFIX}/releases/zheergen-merchant-${VER}.apk"
+          LATEST_KEY="oss://${OSS_BUCKET}/${OSS_PREFIX}/latest.apk"
+          # 自定义域名已绑定到 bucket，所以 URL 里不再出现 bucket 名。
+          ANON_URL="https://${OSS_ENDPOINT}/${OSS_PREFIX}/latest.apk"
+
+          # 自定义域名必须走 cname 寻址，否则 ossutil 会把 bucket 名当前缀拼成
+          # <bucket>.<域名>，解析不了。设成空字符串可去掉该参数（逃生口）。
+          ADDR=()
+          if [[ -n "${OSS_ADDRESSING_STYLE}" ]]; then
+            ADDR=(--addressing-style "${OSS_ADDRESSING_STYLE}")
+          fi
+
+          FLAGS=(
+            -f
+            --acl private
+            --content-type application/vnd.android.package-archive
+            --content-disposition "attachment; filename=zheergen-merchant-${VER}.apk"
+            ${ADDR[@]+"${ADDR[@]}"}
+          )
+
+          echo "上传归档 ${ARCHIVE_KEY}"
+          ossutil cp "$APK" "$ARCHIVE_KEY" "${FLAGS[@]}" \
+            --cache-control 'private, max-age=31536000'
+
+          echo "刷新当前版本 ${LATEST_KEY}"
+          ossutil cp "$APK" "$LATEST_KEY" "${FLAGS[@]}" \
+            --cache-control 'private, no-store'
+
+          # ① 确认它「扫不到」——匿名直连必须被拒。这是整套方案存在的全部意义，
+          #    也是唯一能证明对象 ACL 真的生效的检查（上传成功不代表对象是私有的）。
+          ANON_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${ANON_URL}" || true)"
+          if [[ "${ANON_CODE}" == "200" ]]; then
+            echo "::error::${ANON_URL} 仍可匿名下载（HTTP 200）。把 bucket ACL 与对象 ACL 都设成私有"
+            exit 1
+          fi
+          if [[ "${ANON_CODE}" == "000" ]]; then
+            echo "::error::${ANON_URL} 连不上（DNS 解析失败？）。确认 OSS_ENDPOINT 已绑定到 bucket、且 CNAME 生效"
+            exit 1
+          fi
+          echo "匿名直连已被拒绝（HTTP ${ANON_CODE}）✓"
+
+          # ② 生成签名下载链接。
+          #    用 168h 而不是 7d：168h = 604800s 正好是 V4 签名上限，而 Go 的
+          #    duration 解析不认 "d" 这个单位（只认 h/m/s）。
+          SIGNED_URL="$(ossutil presign "${LATEST_KEY}" --expires-duration 168h \
+            ${ADDR[@]+"${ADDR[@]}"} 2>/dev/null \
+            | grep -oE 'https?://[^[:space:]]+' | head -n1)"
+          if [[ -z "${SIGNED_URL}" ]]; then
+            echo "::error::ossutil presign 没有产出链接"
+            exit 1
+          fi
+
+          # ③ 确认签名链接真的能下。
+          #    预签名 URL 是**绑定 GET 方法**的，所以不能用 HEAD 验（会验签失败）。
+          #    这里用两种「不拉大流量」的方式各试一次，任一成功即认为链接可用：
+          #      a) -r 0-0            只取 1 字节（会发 Range 头）
+          #      b) --max-filesize 1  读到 Content-Length 就中止（**不发 Range 头**）
+          #    试两种是因为 Range 头有可能干扰验签。
+          #    另外：绝不把 URL 打出来当"兜底"——AK 嵌在 x-oss-credential 里，
+          #    GitHub 会把日志里的 secret 脱敏成 ***，打出来的是坏链接。
+          check_link() {
+            local label="$1"; shift
+            local code
+            code="$(curl -s -o /tmp/oss-resp.txt -D /tmp/oss-head.txt \
+              -w '%{http_code}' --max-time 30 "$@" "${SIGNED_URL}" || true)"
+            echo "  [${label}] HTTP ${code}"
+            [[ "${code}" == "200" || "${code}" == "206" ]]
+          }
+
+          echo "签名链接自检："
+          if check_link "Range 0-0" -r 0-0 || check_link "max-filesize 1" --max-filesize 1; then
+            echo "签名链接可用 ✓（链接里含 AK，日志里会被脱敏，别拿日志里的去测）"
+          else
+            {
+              echo "## ❌ 签名链接自检失败"
+              echo
+              echo "### OSS 返回的响应体（这才是真实错误）"
+              echo '```xml'
+              head -c 2000 /tmp/oss-resp.txt || true
+              echo '```'
+              echo "### 请求参数"
+              echo '```'
+              echo "endpoint : ${OSS_ENDPOINT}"
+              echo "region   : ${OSS_REGION}"
+              echo "bucket   : ${OSS_BUCKET}"
+              echo "key      : ${OSS_PREFIX}/latest.apk"
+              echo "AK 长度  : ${#OSS_ACCESS_KEY_ID}"
+              printf 'sign-ver : %s\n' "$(printf '%s' "${SIGNED_URL}" | grep -oE 'x-oss-signature-version=[^&]*')"
+              printf 'expires  : %s\n' "$(printf '%s' "${SIGNED_URL}" | grep -oE 'x-oss-expires=[^&]*')"
+              printf 'add-hdr  : %s\n' "$(printf '%s' "${SIGNED_URL}" | grep -oE 'x-oss-additional-headers=[^&]*' || echo '（无）')"
+              echo '```'
+              echo "### 响应头"
+              echo '```'
+              head -n 15 /tmp/oss-head.txt || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::签名链接两种验证方式都失败，详见本次运行的 Summary 页"
+            head -c 2000 /tmp/oss-resp.txt || true
+            exit 1
+          fi
+
+          echo "SIGNED_URL=${SIGNED_URL}" >> "$GITHUB_ENV"
+
+      - name: 通知飞书
+        if: env.DRY_RUN != 'true'
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_BOT_SECRET: ${{ secrets.FEISHU_BOT_SECRET }}
+        run: |
+          set -euo pipefail
+          : "${FEISHU_WEBHOOK_URL:?缺少 Secret FEISHU_WEBHOOK_URL}"
+
+          EXPIRES="$(TZ=Asia/Shanghai date -d '+7 days' '+%m-%d %H:%M')"
+          TEXT="$(printf '%s\n' \
+            "🚀 折耳根商家端 App 测试版已发布" \
+            "版本：v${{ steps.ver.outputs.version }}（versionCode ${{ steps.ver.outputs.code }}）" \
+            "大小：$(du -h "$APK" | cut -f1)" \
+            "下载（有效期至 ${EXPIRES}，过期请看群里最新一条消息）：" \
+            "${SIGNED_URL}")"
+
+          PAYLOAD="$(jq -nc --arg t "$TEXT" '{msg_type:"text",content:{text:$t}}')"
+
+          # 机器人开了「签名校验」时必须带签名。算法是
+          # HMAC-SHA256(key = "<timestamp>\n<secret>", msg = 空) 再 base64 ——
+          # 注意 timestamp 和 secret 拼起来整体是 key，message 是空字节串。
+          if [[ -n "${FEISHU_BOT_SECRET:-}" ]]; then
+            TS="$(date +%s)"
+            STRING_TO_SIGN="${TS}"$'\n'"${FEISHU_BOT_SECRET}"
+            SIGN="$(printf '' | openssl dgst -sha256 -mac HMAC \
+              -macopt "key:${STRING_TO_SIGN}" -binary | openssl base64 -A)"
+            PAYLOAD="$(jq -nc --argjson b "$PAYLOAD" --arg ts "$TS" --arg s "$SIGN" \
+              '$b + {timestamp:$ts, sign:$s}')"
+          fi
+
+          # 飞书业务失败也返回 HTTP 200，必须解析 body 里的 code。
+          RESP="$(curl -sS --max-time 30 -X POST "$FEISHU_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' -d "$PAYLOAD")"
+          CODE="$(printf '%s' "$RESP" | jq -r '.code // "null"')"
+          if [[ "$CODE" != "0" ]]; then
+            echo "::error::飞书发送失败（code=${CODE}）：${RESP}"
+            case "$CODE" in
+              19021) echo "提示：签名不匹配，核对 FEISHU_BOT_SECRET" ;;
+              19022) echo "提示：机器人开了 IP 白名单，GitHub runner 的出口 IP 是动态的，请改用签名校验" ;;
+              19024) echo "提示：机器人开了自定义关键词，消息里必须包含它" ;;
+            esac
+            exit 1
+          fi
+          echo "飞书通知已发送"
