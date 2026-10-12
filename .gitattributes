@@ -1,0 +1,5 @@
+# 与消费端 ergen-mobile-flutter 同款规则：workflow 与 shell 脚本必须是 LF。
+# 原因：Windows 上 core.autocrlf=true 会把文件checkout成 CRLF，
+# 而 Actions 里 run: 的 bash 遇到行尾 \r 会直接报错（command not found / syntax error）。
+*.sh text eol=lf
+.github/workflows/*.yml text eol=lf
