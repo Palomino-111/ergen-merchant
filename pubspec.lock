@@ -882,6 +882,13 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "5.3.4"
+  tpns_flutter_plugin:
+    dependency: "direct main"
+    description:
+      path: "third_party/tpns_flutter_plugin"
+      relative: true
+    source: path
+    version: "1.1.4"
   typed_data:
     dependency: transitive
     description:

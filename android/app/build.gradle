@@ -28,6 +28,13 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // TPNS 凭据注入：AndroidManifest 里用 ${XG_ACCESS_ID} / ${XG_ACCESS_KEY} 引用。
+        // 为什么放 defaultConfig 而不是 buildTypes：debug 和 release 都用同一套凭据，
+        // 放这里两个 buildType 都会继承，不用重复写。
+        // 注意：这里只放客户端凭据（AccessID/AccessKey），SecretKey 只用于服务端 REST API，
+        // 绝不要写进客户端代码或 manifest，否则会被反编译泄露。
+        manifestPlaceholders["XG_ACCESS_ID"] = "1500047086"
+        manifestPlaceholders["XG_ACCESS_KEY"] = "A77TME78I79A"
     }
 
     signingConfigs {

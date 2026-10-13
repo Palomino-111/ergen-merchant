@@ -82,6 +82,11 @@ dependencies:
   fluwx: ^5.7.1
   # 提供国际化和本地化功能，包括消息翻译、复数和性别、日期/数字格式化和解析以及双向文本。
   intl: ^0.19.0
+  # TPNS 腾讯移动推送（本地修复版，从消费端 third_party 拷贝而来）
+  # 为什么用 path 而不用 pub 上的版本：pub 上的版本有已知问题，消费端已打补丁并验证过真机能收推送，
+  # 直接复用可以避免踩同样的坑。升级 Flutter 或 TPNS 时，同步更新这份本地副本，不要换回 pub 版本。
+  tpns_flutter_plugin:
+    path: third_party/tpns_flutter_plugin
 
 dev_dependencies:
   flutter_test:

@@ -1,0 +1,14 @@
+{
+    "tpns": {
+        "access_id": "1500047086",
+        "access_key": "A77TME78I79A"
+    },
+    "com.zheergen.zheergen_merchant_end": {
+        "channel": {
+            "enable": true
+        }
+    },
+    "debug": false,
+    "version": "0.0.0-release",
+    "upgrade": true
+}
