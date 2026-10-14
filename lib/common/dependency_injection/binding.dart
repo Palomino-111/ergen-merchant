@@ -2,8 +2,10 @@ import 'package:get/get.dart';
 import '../data/data_source/cache/meal_cache_ds.dart';
 import '../data/data_source/remote/meal_delivery_order_remote_ds.dart';
 import '../data/data_source/remote/meal_remote_ds.dart';
+import '../data/data_source/remote/merchant_device_remote_ds.dart';
 import '../data/repository/meal_delivery_order_repository.dart';
 import '../data/repository/meal_repository.dart';
+import '../data/repository/merchant_device_repository.dart';
 
 class RepositoryBinding implements Bindings {
   @override
@@ -21,6 +23,14 @@ class RepositoryBinding implements Bindings {
     );
     Get.lazyPut<MealDeliveryOrderRepository>(
       () => MealDeliveryOrderRepositoryImpl(
+        remote: Get.find(),
+      ),
+    );
+    Get.lazyPut<MerchantDeviceRemoteDS>(
+      () => MerchantDeviceRemoteDSImpl(),
+    );
+    Get.lazyPut<MerchantDeviceRepository>(
+      () => MerchantDeviceRepositoryImpl(
         remote: Get.find(),
       ),
     );
