@@ -1,4 +1,4 @@
-import '../../models/merchant_device.dart';
+
 import '../data_source/remote/merchant_device_remote_ds.dart';
 
 /// 商家设备仓库。
@@ -14,8 +14,7 @@ abstract class MerchantDeviceRepository {
     String? appVersion,
   });
 
-  /// 查该商家下的全部设备（自测排查用）。
-  Future<List<MerchantDevice>> getDevices(String merchantId);
+ 
 }
 
 class MerchantDeviceRepositoryImpl implements MerchantDeviceRepository {
@@ -40,8 +39,4 @@ class MerchantDeviceRepositoryImpl implements MerchantDeviceRepository {
     );
   }
 
-  @override
-  Future<List<MerchantDevice>> getDevices(String merchantId) {
-    return _remote.fetchByMerchant(merchantId);
-  }
 }

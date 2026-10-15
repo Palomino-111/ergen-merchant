@@ -2,15 +2,40 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:zheergen_merchant_end/common/utility/common.dart';
 import '../../common/dimensions.dart';
+import '../../common/push/tpns_service.dart';
 import '../../common/widget/page_scaffold.dart';
 import 'logic.dart';
 import 'my/view.dart';
 import 'plan/view.dart';
 
-class MainPage extends StatelessWidget {
-  MainPage({Key? key}) : super(key: key);
+/// 主页面：生产计划 + 我的，两个 tab。
+///
+/// 改成 StatefulWidget 的原因：需要在首帧之后消费「冷启动被通知拉起」时
+/// TpnsService 暂存的 pending orderId。StatelessWidget 没有生命周期钩子，
+/// 硬塞在 build 里会每次重建都触发一次跳转。
+class MainPage extends StatefulWidget {
+  const MainPage({Key? key}) : super(key: key);
+
+  @override
+  State<MainPage> createState() => _MainPageState();
+}
+
+class _MainPageState extends State<MainPage> {
   final logic = Get.put(MainLogic());
   final state = Get.find<MainLogic>().state;
+
+  @override
+  void initState() {
+    super.initState();
+    // 首帧之后才消费 pending：TabController.animateTo 要求 controller
+    // 已经 attach 到 TabBarView（首帧 build 完成才算），否则跳转会无效。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final pendingOrderId = TpnsService.I.consumePendingOrderId();
+      if (pendingOrderId != null && mounted) {
+        logic.jumpToPendingOrder(pendingOrderId);
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
