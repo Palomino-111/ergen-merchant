@@ -78,11 +78,11 @@ class TpnsService {
 
     try {
       _plugin.startXg('', '');
-      debugPrint('🔵 [TPNS] startXg 已调用');
+      print('🔵 [TPNS] startXg 已调用');
       // 通知权限不阻塞初始化，延后异步请求
       _requestPermission();
     } catch (e, st) {
-      debugPrint('🔴 [TPNS] startXg 失败: $e\n$st');
+      print('🔴 [TPNS] startXg 失败: $e\n$st');
     }
   }
 
@@ -96,7 +96,7 @@ class TpnsService {
     try {
       _plugin.stopXg();
     } catch (e, st) {
-      debugPrint('🔴 [TPNS] stopXg 失败: $e\n$st');
+      print('🔴 [TPNS] stopXg 失败: $e\n$st');
     }
     clearToken();
   }
@@ -108,6 +108,7 @@ class TpnsService {
   ///   - merchantId 就绪时（MerchantController 拿到 merchantId 后调）
   /// 两条路径都调到同一个方法，谁晚谁触发上报。
   Future<void> tryUploadPendingToken() async {
+    print('🔵 [TPNS] tryUploadPendingToken 被调用, _currentToken=$_currentToken');
     if (defaultTargetPlatform != TargetPlatform.android) return;
 
     final token = _currentToken;
@@ -144,12 +145,12 @@ class TpnsService {
       );
       _uploadedToken = token;
       _uploadedMerchantId = merchantId;
-      debugPrint('🔵 [TPNS] token 上报成功: merchant=$merchantId, token=$token');
+      print('🔵 [TPNS] token 上报成功: merchant=$merchantId, token=$token');
     } catch (e, st) {
       // 上报失败不阻塞：下次 token 回调 / 登录都会重试。
       // 不在这里做重试队列：token 上报的频率极低（装机一次、换账号一次），
       // 靠"下一次机会"就够了。
-      debugPrint('🔴 [TPNS] token 上报失败: $e\n$st');
+      print('🔴 [TPNS] token 上报失败: $e\n$st');
     }
   }
 
@@ -162,7 +163,7 @@ class TpnsService {
       _currentToken = t;
       return t;
     } catch (e) {
-      debugPrint('🔴 [TPNS] 获取 Token 失败: $e');
+      print('🔴 [TPNS] 获取 Token 失败: $e');
       return null;
     }
   }
@@ -184,6 +185,16 @@ class TpnsService {
     return id;
   }
 
+    /// 把待跳转的 orderId 存起来（由 main.dart 在 MainLogic 未就绪时调用）。
+  ///
+  /// 为什么需要这个：onOrderClicked 在冷启动时可能早于 MainPage 创建，
+  /// 此时 Get.find<MainLogic>() 拿不到实例，需要把 orderId 暂存，
+  /// 等 MainPage 首帧后消费。
+  void setPendingOrderId(String orderId) {
+    _pendingOrderId = orderId;
+    print('🟡 [TPNS] 暂存 pending orderId: $orderId');
+  }
+
   /// 开关底层 SDK 调试日志（发布前应关闭）。
   void setDebug(bool enable) => _plugin.setEnableDebug(enable);
 
@@ -193,53 +204,66 @@ class TpnsService {
     try {
       _plugin.addEventHandler(
         onRegisteredDeviceToken: (String token) async {
-          debugPrint('🔵 [TPNS] 注册成功, token: $token');
+          print('🔵 [TPNS] 注册成功, token: $token');
           _currentToken = token;
           // token 就绪 → 尝试上报（如果 merchantId 已就绪）
           await tryUploadPendingToken();
         },
-        onRegisteredDone: (String msg) async {
-          debugPrint('🔵 [TPNS] 注册完成: $msg');
+               onRegisteredDone: (String msg) async {
+          print('🔵 [TPNS] 注册完成: $msg');
+          // 部分版本/设备上 onRegisteredDeviceToken 不会自动触发，
+          // 需要在注册完成后主动取一次。取到了当 token 就绪处理，
+          // 取不到就等 onRegisteredDeviceToken 回调（两条路都覆盖）。
+          try {
+            final t = await XgFlutterPlugin.xgToken;
+            print('🔵 [TPNS] 主动取 token: $t');
+            if (t != null && t.isNotEmpty) {
+              _currentToken = t;
+              await tryUploadPendingToken();
+            }
+          } catch (e) {
+            print('🔴 [TPNS] 主动取 token 失败: $e');
+          }
         },
         onReceiveNotificationResponse: (Map<String, dynamic> msg) async {
-          debugPrint('🔵 [TPNS] 前台收到通知: $msg');
+          print('🔵 [TPNS] 前台收到通知: $msg');
           // Android 前台不会自动弹通知，必须自己展示；
           // 不处理的话表现就是"App 开着反而没提醒"，是最容易被投诉的体验 bug
           _showInAppNotification(msg);
         },
         xgPushClickAction: (Map<String, dynamic> msg) async {
-          debugPrint('🔵 [TPNS] 点击通知: $msg');
+          print('🔵 [TPNS] 点击通知: $msg');
           _handleClick(msg);
         },
         onReceiveMessage: (Map<String, dynamic> msg) async {
           // 透传消息不弹通知，本项目用不到，仅打印避免误判"推送没到"
-          debugPrint('🔵 [TPNS] 收到透传消息 ⚠️不会弹窗: $msg');
+          print('🔵 [TPNS] 收到透传消息 ⚠️不会弹窗: $msg');
         },
         unRegistered: (String msg) async {
-          debugPrint('🔵 [TPNS] 反注册: $msg');
+          print('🔵 [TPNS] 反注册: $msg');
         },
       );
     } catch (e, st) {
-      debugPrint('🔴 [TPNS] 注册回调失败: $e\n$st');
+      print('🔴 [TPNS] 注册回调失败: $e\n$st');
     }
   }
 
   Future<void> _requestPermission() async {
     try {
       final status = await Permission.notification.status;
-      debugPrint('🔵 [TPNS] 通知权限状态: $status');
+      print('🔵 [TPNS] 通知权限状态: $status');
       if (status.isDenied) {
         final result = await Permission.notification.request();
-        debugPrint('🔵 [TPNS] 请求通知权限结果: $result');
+        print('🔵 [TPNS] 请求通知权限结果: $result');
         if (result.isPermanentlyDenied) {
-          debugPrint('🔴 [TPNS] 通知权限被永久拒绝，请到系统设置中手动开启');
+          print('🔴 [TPNS] 通知权限被永久拒绝，请到系统设置中手动开启');
           // 只在永久拒绝时才跳设置：正常拒绝是用户的合理选择，
           // 每次都弹设置反而会骚扰
           await openAppSettings();
         }
       }
     } catch (e) {
-      debugPrint('🔴 [TPNS] 权限请求异常: $e');
+      print('🔴 [TPNS] 权限请求异常: $e');
     }
   }
 
@@ -271,14 +295,14 @@ class TpnsService {
         },
       );
     } catch (e, st) {
-      debugPrint('🔴 [TPNS] 前台通知展示失败: $e\n$st');
+      print('🔴 [TPNS] 前台通知展示失败: $e\n$st');
     }
   }
 
   void _handleClick(Map<String, dynamic> msg) {
     final orderId = _extractOrderId(msg);
     if (orderId == null) {
-      debugPrint('🟡 [TPNS] 点击通知但未解析出 orderId，忽略');
+      print('🟡 [TPNS] 点击通知但未解析出 orderId，忽略');
       return;
     }
     _handleClickOrder(orderId);
@@ -292,7 +316,7 @@ class TpnsService {
     }
     // 冷启动：onOrderClicked 还没被 main.dart 注入，先缓存
     _pendingOrderId = orderId;
-    debugPrint('🟡 [TPNS] onOrderClicked 尚未注册，缓存 pending: $orderId');
+    print('🟡 [TPNS] onOrderClicked 尚未注册，缓存 pending: $orderId');
   }
 
   /// 从推送 payload 里找 orderId。

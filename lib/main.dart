@@ -21,6 +21,8 @@ import 'common/hive_names.dart';
 import 'common/theme/app_theme.dart';
 import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'common/utility/common.dart';
+import 'common/push/tpns_service.dart';
+import 'page/main/logic.dart';
 
 /// 调试用 HTTP 代理：dart:io 默认直连、不走系统代理，
 /// 国内直连 supabase.co 时请求会一直挂着（表现就是「一直在加载」）。
@@ -56,6 +58,9 @@ Future<void> initializeBeforeRunApp() async {
       .put('userHasSignedTheRelevantAgreement', true);
   initGetX();
   await initSupabase();
+  // TPNS 放在 initSupabase 之后：token 上报需要 GetX 里已注册的
+  // MerchantDeviceRepository，且要能读到登录态（由 MerchantController 提供）。
+  await initTpns();
   await initFluwx();
 }
 
@@ -69,6 +74,33 @@ Future<void> initFluwx() async {
   //   // universalLink: "https://your.univerallink.com/link/",
   // );
   // print("initFluwx, isSuccess:$isSuccess");
+}
+
+Future<void> initTpns() async {
+  print('🔵🔵🔵 initTpns 被调用了');
+  // 注入 merchantId 的读取方式：common 层不依赖 getx/controller 层，
+  // 由 main.dart 这一层决定"从哪拿 merchantId"。
+  // 用函数而不是直接读：MerchantController 可能在初始化过程中变化，
+  // 每次调用时实时读，拿到的就是最新的。
+  TpnsService.I.merchantIdProvider =
+      () => MerchantController.to.merchant.value?.id;
+
+  // 点击通知的跳转逻辑：先切主 tab 到「生产计划」，再切 planTab 到「待制作」，
+  // 具体实现在 main/logic.dart 的 jumpToPendingOrder 里。
+  // 这里用延迟查找（Get.find 在回调被触发时才执行），
+  // 避免 App 冷启动时 PlanTabController 还没就绪。
+    TpnsService.I.onOrderClicked = (orderId) {
+    // 冷启动场景：点通知 → 系统拉起 App → 回调可能早于 MainPage 创建，
+    // 此时 MainLogic 还没注册到 GetX，跳不了，先暂存到 TpnsService，
+    // 等 MainPage 首帧后再消费（见 page/main/view.dart）。
+    if (Get.isRegistered<MainLogic>()) {
+      Get.find<MainLogic>().jumpToPendingOrder(orderId);
+    } else {
+      TpnsService.I.setPendingOrderId(orderId);
+    }
+  };
+
+  await TpnsService.I.init();
 }
 
 void initGetX() {
