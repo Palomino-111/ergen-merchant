@@ -1,0 +1,267 @@
+// 备餐提醒 Edge Function
+//
+// 触发：pg_cron 每分钟 POST 一次（带 x-cron-secret 鉴权头）
+// 流程：
+//   1. 校验 CRON_SECRET
+//   2. 调 PG 函数认领一批 due 行（claim_due_meal_reminders）
+//   3. 按 merchant_id 查 merchant_device 拿 TPNS token
+//   4. 调 TPNS REST API 推送
+//   5. 推送失败的回滚标记（下一轮 cron 会重试）
+//
+// 为什么需要 Edge Function 中转：pg_net 免费版只允许请求 supabase.co 域名，
+// 而 TPNS 在 tencent.com 域名。直接让 cron 打 TPNS 会被拦截。
+//
+// 为什么用 service_role key 连库：绕过 RLS 直接读写。
+// 客户端只用 anon key，拿不到这个 key 也就调不动这张表。
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const TPNS_ACCESS_ID = Deno.env.get('TPNS_ACCESS_ID')!;
+const TPNS_SECRET_KEY = Deno.env.get('TPNS_SECRET_KEY')!;
+const CRON_SECRET = Deno.env.get('CRON_SECRET')!;
+
+const TPNS_PUSH_URL = 'https://api.tpns.tencent.com/v3/push/app';
+
+// 一轮最多处理多少条。dry-run 显示日常只有十几条，100 是安全上限。
+const CLAIM_LIMIT = 100;
+
+// 运行预算：跑太久会被 Supabase 强杀，来不及回滚。
+// 60 秒留出足够余量（免费版默认 150 秒硬超时）。
+// 超预算的行会被跳过并回滚，下一轮 cron 继续处理。
+const RUN_BUDGET_MS = 60_000;
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+interface ClaimedReminder {
+  id: string;
+  merchant_id: string;
+  delivery_time: string;
+}
+
+Deno.serve(async (req) => {
+  const started = Date.now();
+
+  // 1. 鉴权：只用 CRON_SECRET。函数部署时会关闭 JWT 验证
+  //（见部署后的设置步骤），所以这里是唯一的门。
+  const auth = req.headers.get('x-cron-secret');
+  if (auth !== CRON_SECRET) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+
+  // 2. 认领一批：PG 函数的 UPDATE ... RETURNING 保证幂等，
+  // 谁拿到行谁负责推，多实例/重入不会重复。
+  const { data: claimed, error: claimErr } = await supabase.rpc(
+    'claim_due_meal_reminders',
+    { p_limit: CLAIM_LIMIT },
+  );
+  if (claimErr) {
+    console.error('claim fail', claimErr);
+    return json({ error: 'claim_fail', detail: claimErr.message }, 500);
+  }
+
+  const reminders = (claimed ?? []) as ClaimedReminder[];
+  if (reminders.length === 0) {
+    return json({ claimed: 0, pushed: 0, failed: 0, elapsed_ms: Date.now() - started });
+  }
+
+  // 3. 按 merchant_id 批量查设备：一次 in 查询，避免 N+1
+  const merchantIds = [...new Set(reminders.map((r) => r.merchant_id))];
+  const { data: devices, error: devErr } = await supabase
+    .from('merchant_device')
+    .select('merchant_id, tpns_token')
+    .in('merchant_id', merchantIds);
+
+  if (devErr) {
+    // 查设备失败：全部回滚，让下一轮重试
+    console.error('fetch devices fail', devErr);
+    await rollbackAll(reminders.map((r) => r.id));
+    return json({ claimed: reminders.length, pushed: 0, failed: reminders.length });
+  }
+
+  const tokensByMerchant = new Map<string, string[]>();
+  for (const d of devices ?? []) {
+    const list = tokensByMerchant.get(d.merchant_id) ?? [];
+    list.push(d.tpns_token);
+    tokensByMerchant.set(d.merchant_id, list);
+  }
+
+  // 4. 逐单推送
+  let pushed = 0;
+  let failed = 0;
+  const failedIds: string[] = [];
+
+  for (const r of reminders) {
+    // 运行预算保护：超时就把剩余的当失败回滚，下一轮再处理。
+    // 不回滚会丢提醒（这一单永远不提醒），回滚的代价只是晚一点提醒。
+    if (Date.now() - started > RUN_BUDGET_MS) {
+      console.warn(`run budget exceeded, rollback order ${r.id}`);
+      failedIds.push(r.id);
+      failed++;
+      continue;
+    }
+
+    const tokens = tokensByMerchant.get(r.merchant_id) ?? [];
+    if (tokens.length === 0) {
+      // 该商家没注册任何设备：推不出去。
+      // 决策：保留标记（视为成功），不重试。理由：
+      // - 没设备是商家端的问题（没登录/没授权通知），重试也推不出去
+      // - 反复重试只会产生日志噪音
+      // 上线前要求商家先登录一次 App，就是为了避免这种情况。
+      console.warn(`no device for merchant ${r.merchant_id}, order ${r.id}, skip`);
+      pushed++;
+      continue;
+    }
+
+    try {
+      await pushToTpns(r, tokens);
+      pushed++;
+    } catch (e) {
+      console.error(`push fail for order ${r.id}`, e);
+      failedIds.push(r.id);
+      failed++;
+    }
+  }
+
+  // 5. 回滚失败的标记，让下一轮 cron 重新认领并重试
+  // 决策：选择回滚而非"标记了但没推"。
+  // 本项目每单只提醒一次，重试比漏推安全。
+  if (failedIds.length > 0) {
+    await rollbackAll(failedIds);
+  }
+
+  return json({
+    claimed: reminders.length,
+    pushed,
+    failed,
+    elapsed_ms: Date.now() - started,
+  });
+});
+
+async function rollbackAll(ids: string[]) {
+  for (const id of ids) {
+    try {
+      await supabase.rpc('rollback_meal_reminder', { p_order_id: id });
+    } catch (e) {
+      // 回滚失败无法补救，只能记日志。下一轮 cron 也不会再捡到这条，
+      // 相当于这一单永久漏提醒 —— 属于极小概率的失败路径。
+      console.error(`rollback fail for ${id}`, e);
+    }
+  }
+}
+
+async function pushToTpns(r: ClaimedReminder, tokens: string[]) {
+  const deliveryDate = new Date(r.delivery_time);
+  const remindStart = new Date(deliveryDate.getTime() - 45 * 60 * 1000);
+
+  const deliveryStr = formatBeijing(deliveryDate);
+  const remindStartIso = remindStart.toISOString();
+  const deliveryIso = deliveryDate.toISOString();
+
+  // 业务字段塞 custom_content，供客户端跳转和展示。
+  // 字段名对齐饿了么预订单备餐提醒（type=223），将来跟平台对接不用改名。
+  const customContent = {
+    type: 'MEAL_PREP_REMIND',
+    orderId: r.id,
+    merchantId: r.merchant_id,
+    deliveryTime: deliveryIso,
+    remindStartCookingTime: remindStartIso,
+  };
+
+  const body = {
+    audience_type: 'token_list',
+    token_list: tokens,
+    message_type: 'notify',
+    environment: 'product',
+    message: {
+      title: '该备餐了',
+      content: `有订单预计 ${deliveryStr.slice(-5)} 送达，请开始备餐`,
+      // thread_id 每条唯一：防止多条提醒被系统折叠成"有 N 条通知"。
+      // 备餐提醒是紧急业务通知，被折叠会导致商家漏看。
+      // （TPNS 的折叠控制靠 thread_id，不是 FCM 的 collapse_key）
+      thread_id: `meal-prep-${r.id}`,
+      thread_sumtext: '备餐提醒',
+            android: {
+        n_id: 0,
+        ring: 1,
+        vibrate: 1,
+        lights: 1,
+        clearable: 1,
+        // TPNS 要求 custom_content 是「字符串形式的 JSON」，不是 JSON 对象。
+        // 传对象会报 1008001: "is not the type: object"（文档 Android 示例是 "{\"key\":\"value\"}"）。
+        // 客户端解析时对这个字段做 JSON.parse 即可（TpnsService 已兼容字符串形式）。
+        custom_content: JSON.stringify(customContent),
+      },
+    },
+  };
+
+  // 关键：bodyStr 必须与实际发送的字节完全一致，否则 TPNS 验签失败。
+  // 所以先序列化一次、用它算 Sign、原样发送这串，不能重新 stringify。
+  const bodyStr = JSON.stringify(body);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const sign = await computeSign(timestamp, TPNS_ACCESS_ID, bodyStr);
+
+  const resp = await fetch(TPNS_PUSH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      AccessId: TPNS_ACCESS_ID,
+      TimeStamp: String(timestamp),
+      Sign: sign,
+    },
+    body: bodyStr,
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new Error(`TPNS HTTP ${resp.status}: ${text}`);
+  }
+
+  let result: { ret_code?: number };
+  try {
+    result = JSON.parse(text);
+  } catch {
+    throw new Error(`TPNS response not JSON: ${text}`);
+  }
+  if (result.ret_code !== 0) {
+    throw new Error(`TPNS ret_code=${result.ret_code}: ${text}`);
+  }
+}
+
+// TPNS v3 签名：Sign = Base64(hex(HMAC_SHA256(SecretKey, TimeStamp + AccessId + body)))
+// 坑：是 hex 字符串再 base64，不是原始字节 base64。
+async function computeSign(
+  timestamp: number,
+  accessId: string,
+  body: string,
+): Promise<string> {
+  const toSign = `${timestamp}${accessId}${body}`;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(TPNS_SECRET_KEY),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(toSign));
+  const hex = Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return btoa(hex);
+}
+
+// 格式化成北京时间 YYYY-MM-DD HH:mm，用于通知文案
+function formatBeijing(d: Date): string {
+  const bj = new Date(d.getTime() + 8 * 3600 * 1000);
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())} ${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}`;
+}
+
+function json(obj: unknown, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
