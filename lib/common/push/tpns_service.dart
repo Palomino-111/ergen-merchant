@@ -269,6 +269,7 @@ class TpnsService {
 
   /// 前台展示应用内提醒：弹窗 + 震动 + 提示音。
   void _showInAppNotification(Map<String, dynamic> msg) {
+    print('🔵 [TPNS] 前台 payload: $msg');
     try {
       // 震动 + 提示音：让商家在"没盯着屏幕"时也能察觉
       HapticFeedback.heavyImpact();
@@ -278,7 +279,7 @@ class TpnsService {
           ? msg['title'] as String
           : '该备餐了';
       final body = (msg['body'] as String?)?.trim().isNotEmpty == true
-          ? msg['body'] as String
+          ? msg['content'] as String
           : '有新订单需要备餐';
       final orderId = _extractOrderId(msg);
 
@@ -326,10 +327,38 @@ class TpnsService {
   ///   1. 顶层（某些情况下 SDK 直接展开）
   ///   2. custom 字符串（JSON）
   ///   3. customContent Map
+    /// 从推送 payload 里找 orderId。
+  ///
+  /// 实测 TPNS Android 客户端回调结构（2026-10 验证）：
+  /// {
+  ///   notifactionId: 30146429,
+  ///   title: "该备餐了",
+  ///   content: "有订单预计 18:25 送达，请开始备餐",
+  ///   customMessage: "{\"orderId\":\"...\",\"merchantId\":\"...\"}",  // 字符串！
+  ///   ...
+  /// }
+  ///
+  /// 所以按优先级：
+  ///   1. customMessage 字符串 → JSON.parse → orderId
+  ///   2. custom 字符串 → JSON.parse → orderId（兼容其它发送方式）
+  ///   3. customContent Map（兼容）
+  ///   4. 顶层 orderId（兼容）
   String? _extractOrderId(Map<String, dynamic> msg) {
-    final direct = msg['orderId'];
-    if (direct is String && direct.isNotEmpty) return direct;
+    // 1. customMessage（TPNS Android 实际用的字段名）
+    final customMessage = msg['customMessage'];
+    if (customMessage is String && customMessage.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(customMessage);
+        if (decoded is Map) {
+          final id = decoded['orderId'];
+          if (id is String && id.isNotEmpty) return id;
+        }
+      } catch (_) {
+        // 不是 JSON，忽略
+      }
+    }
 
+    // 2. custom（某些 SDK 版本/推送方式）
     final custom = msg['custom'];
     if (custom is String && custom.isNotEmpty) {
       try {
@@ -343,11 +372,16 @@ class TpnsService {
       }
     }
 
+    // 3. customContent Map（兼容）
     final customContent = msg['customContent'];
     if (customContent is Map) {
       final id = customContent['orderId'];
       if (id is String && id.isNotEmpty) return id;
     }
+
+    // 4. 顶层 orderId（兼容）
+    final direct = msg['orderId'];
+    if (direct is String && direct.isNotEmpty) return direct;
 
     return null;
   }
