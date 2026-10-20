@@ -22,7 +22,6 @@ import '../../../common/models/meal_delivery_order.dart';
 import '../../../common/utility/common.dart';
 import '../../../common/utility/toast.dart';
 import '../../../common/widget/app_bar_scaffold.dart';
-import '../../../common/widget/blur_button.dart';
 import '../../../common/widget/dialog/text_dialog.dart';
 import 'logic.dart';
 
@@ -105,37 +104,40 @@ class PlanStatefulWidget extends State<PlanPage>
         borderRadius: BorderRadius.all(
           Radius.circular(Dimensions.borderRadius12),
         ),
+        // 原来是 sigma 10 的 BackdropFilter：tab 栏压在滚动列表上，
+        // 每帧都要重算一次全宽高斯模糊，是滚动时**常驻**的成本
+        // （和订单数量无关，但一直都在，几百条时和 chip 的模糊叠加更明显）。
+        // 换成 80% 黑的半透明块：暗色主题下观感几乎一致，且不产生离屏层。
+        // 想调通透程度就改这里的 alpha（0xCC = 80%）。
+        color: const Color(0xCC000000),
       ),
-      child: BackdropFilter(
-        filter: buildImageFilter(),
-        child: TabBar(
-          controller: mainLogic.planTabController,
-          dividerHeight: 0,
-          tabAlignment: TabAlignment.start,
-          labelPadding: EdgeInsets.zero,
-          isScrollable: true,
-          // 去掉水波纹效果
-          overlayColor: WidgetStateProperty.all(Colors.transparent),
-          indicatorWeight: 0,
-          indicator: ShapeDecoration(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(
-                Dimensions.borderRadius12,
-              ),
+      child: TabBar(
+        controller: mainLogic.planTabController,
+        dividerHeight: 0,
+        tabAlignment: TabAlignment.start,
+        labelPadding: EdgeInsets.zero,
+        isScrollable: true,
+        // 去掉水波纹效果
+        overlayColor: WidgetStateProperty.all(Colors.transparent),
+        indicatorWeight: 0,
+        indicator: ShapeDecoration(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(
+              Dimensions.borderRadius12,
             ),
-            color: Theme.of(
-              context,
-            ).colorScheme.onSurface.withOpacity(0.1),
           ),
-          tabs: [
-            for (final MealDeliveryOrderListController controller
-                in logic.orderControllers)
-              buildGroupTab(context, controller),
-          ],
-          indicatorColor: Theme.of(
+          color: Theme.of(
             context,
-          ).colorScheme.secondary,
+          ).colorScheme.onSurface.withOpacity(0.1),
         ),
+        tabs: [
+          for (final MealDeliveryOrderListController controller
+              in logic.orderControllers)
+            buildGroupTab(context, controller),
+        ],
+        indicatorColor: Theme.of(
+          context,
+        ).colorScheme.secondary,
       ),
     );
   }
@@ -593,36 +595,73 @@ class PlanStatefulWidget extends State<PlanPage>
   Widget buildFoods(Meal meal) {
     final List<DishSku>? dishSkus = meal.dishSkus;
     if (dishSkus == null || dishSkus.isEmpty) {
-      return SizedBox();
+      return const SizedBox.shrink();
     }
-    return Container(
+    return SizedBox(
       width: double.infinity,
       child: Wrap(
         spacing: Dimensions.padding16,
         runSpacing: Dimensions.padding16,
         children: <Widget>[
-          ...List.generate(
-            dishSkus.length,
-            (index) {
-              return BlurButton(
-                // TODO 给dish_sku加上图片
-                imageProvider: /*dishSkus[index].image != null
-                    ? NetworkImage(dishSkus[index].image ?? '')
-                    :*/
-                    AssetImage('assets/test.jpeg'),
-                child: CupertinoButton(
-                  minSize: Dimensions.button60,
-                  onPressed: () async {},
-                  child: Text(
-                    '${dishSkus[index].name}',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurface,
-                      fontSize: Dimensions.fontSize32,
-                    ),
-                  ),
+          for (final DishSku dishSku in dishSkus) buildDishChip(dishSku),
+        ],
+      ),
+    );
+  }
+
+  /**
+   * 单个菜品 chip。
+   *
+   * 原来这里用 BlurButton（每个 chip 一个实时 BackdropFilter + IntrinsicWidth）。
+   * 滚动时每帧都要为屏幕内每个 chip 重算一次高斯模糊，一单几个菜、一屏几单
+   * 就是几十个离屏层（saveLayer），几百条单子往下滑会明显掉帧；
+   * IntrinsicWidth 还会在 layout 阶段多遍历一次子项。
+   *
+   * 现在改成「图片底 + 半透明纯色块」：视觉上几乎一样，但没有离屏层，
+   * 也不再需要 IntrinsicWidth —— Wrap 里的子项本来就按自身尺寸排。
+   * 注意别再把 BackdropFilter 塞回这里，那会让长列表重新变卡。
+   */
+  Widget buildDishChip(DishSku dishSku) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(Dimensions.borderRadius12),
+      child: Stack(
+        children: <Widget>[
+          // 背景图
+          Positioned.fill(
+            child: Container(
+              // TODO 给dish_sku加上图片
+              decoration: BoxDecoration(
+                image: DecorationImage(
+                  image: const AssetImage('assets/test.jpeg'),
+                  fit: BoxFit.fitWidth,
                 ),
-              );
-            },
+              ),
+            ),
+          ),
+          // 代替原来的实时模糊：一层纯色半透明（白色 10%），不产生离屏层。
+          // 用 const 颜色而不是 withOpacity()，省掉每帧的 Color 分配
+          Positioned.fill(
+            child: ColoredBox(
+              color: const Color(0x1AFFFFFF),
+            ),
+          ),
+          // 文本撑起 chip 尺寸，最小高度对齐原来的 minSize: 60
+          Container(
+            constraints: const BoxConstraints(
+              minWidth: Dimensions.button60,
+              minHeight: Dimensions.button60,
+            ),
+            padding: const EdgeInsets.symmetric(
+              horizontal: Dimensions.padding16,
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              dishSku.name,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface,
+                fontSize: Dimensions.fontSize32,
+              ),
+            ),
           ),
         ],
       ),

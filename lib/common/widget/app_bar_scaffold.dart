@@ -69,35 +69,28 @@ class AppBarScaffold extends AppBar {
                           width: Dimensions.padding16,
                         ),
                         Expanded(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(
-                              Dimensions.borderRadius12,
+                          child: Container(
+                            alignment: Alignment.center,
+                            height: Dimensions.button60,
+                            padding: EdgeInsets.only(
+                              left: Dimensions.padding16,
+                              right: Dimensions.padding16,
                             ),
-                            child: BackdropFilter(
-                              filter:
-                                  ImageFilter.blur(sigmaX: 10.0, sigmaY: 10.0),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(
-                                    Dimensions.borderRadius12),
-                                child: Container(
-                                  // color: Colors.white.withOpacity(0.1),
-                                  // color: t1.value
-                                  //     ? Colors.red.withOpacity(0.1)
-                                  //     : Theme.of(context).cardColor,
-                                  // color: Theme.of(context).cardColor,
-                                  alignment: Alignment.center,
-                                  padding: EdgeInsets.only(
-                                    left: Dimensions.padding16,
-                                    right: Dimensions.padding16,
-                                  ),
-                                  height: Dimensions.button60,
-                                  child: Text(
-                                    "${titleString ?? ""}",
-                                    style: TextStyle(
-                                      fontSize: Dimensions.fontSize32,
-                                    ),
-                                  ),
-                                ),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(
+                                Dimensions.borderRadius12,
+                              ),
+                              // 原来是 sigma 10 的 BackdropFilter：标题条同样压在
+                              // 滚动内容上（PageScaffold 开了 extendBodyBehindAppBar），
+                              // 每帧都要重算一次全宽模糊。换成 80% 黑的半透明块，
+                              // 暗色主题下观感几乎一致，滚动时不再产生离屏层。
+                              // 想调通透程度就改这里的 alpha（0xCC = 80%）。
+                              color: const Color(0xCC000000),
+                            ),
+                            child: Text(
+                              titleString,
+                              style: TextStyle(
+                                fontSize: Dimensions.fontSize32,
                               ),
                             ),
                           ),
